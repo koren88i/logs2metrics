@@ -47,10 +47,18 @@ services:
   api:
     build: ./api
     container_name: l2m-api
+    environment:
+      - ES_URL=http://elasticsearch:9200
+      - KIBANA_URL=http://kibana:5601
     ports:
       - "8091:8000"
     volumes:
       - api-data:/app/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kibana:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 10s

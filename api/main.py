@@ -2,9 +2,22 @@
 
 from datetime import datetime
 
-from fastapi import Depends, FastAPI, HTTPException
+from elasticsearch import NotFoundError as ESNotFoundError
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
+from httpx import HTTPStatusError
 from sqlmodel import Session, select
 
+import es_connector
+import kibana_connector
+from connector_models import (
+    DashboardDetail,
+    DashboardSummary,
+    FieldCardinality,
+    IndexInfo,
+    IndexMapping,
+    IndexStats,
+)
 from database import create_db, get_session
 from models import (
     LogMetricRule,
@@ -13,7 +26,28 @@ from models import (
     RuleUpdate,
 )
 
-app = FastAPI(title="Logs2Metrics API", version="0.1.0")
+app = FastAPI(title="Logs2Metrics API", version="0.2.0")
+
+
+@app.exception_handler(ESNotFoundError)
+async def es_not_found_handler(request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={"detail": f"Elasticsearch resource not found: {exc}"},
+    )
+
+
+@app.exception_handler(HTTPStatusError)
+async def kibana_error_handler(request, exc):
+    if exc.response.status_code == 404:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"Kibana resource not found"},
+        )
+    return JSONResponse(
+        status_code=502,
+        content={"detail": f"Kibana error: {exc.response.status_code}"},
+    )
 
 
 @app.on_event("startup")
@@ -103,3 +137,39 @@ def delete_rule(rule_id: int, session: Session = Depends(get_session)):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# -- ES Connector endpoints --------------------------------------------
+
+
+@app.get("/api/es/indices", response_model=list[IndexInfo])
+def api_list_indices(pattern: str = Query(default="*")):
+    return es_connector.list_indices(pattern)
+
+
+@app.get("/api/es/indices/{index}/mapping", response_model=IndexMapping)
+def api_get_mapping(index: str):
+    return es_connector.get_mapping(index)
+
+
+@app.get("/api/es/indices/{index}/cardinality/{field}", response_model=FieldCardinality)
+def api_get_field_cardinality(index: str, field: str):
+    return es_connector.get_field_cardinality(index, field)
+
+
+@app.get("/api/es/indices/{index}/stats", response_model=IndexStats)
+def api_get_index_stats(index: str):
+    return es_connector.get_index_stats(index)
+
+
+# -- Kibana Connector endpoints ----------------------------------------
+
+
+@app.get("/api/kibana/dashboards", response_model=list[DashboardSummary])
+def api_list_dashboards():
+    return kibana_connector.list_dashboards()
+
+
+@app.get("/api/kibana/dashboards/{dashboard_id}", response_model=DashboardDetail)
+def api_get_dashboard(dashboard_id: str):
+    return kibana_connector.get_dashboard_with_panels(dashboard_id)
