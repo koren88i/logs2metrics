@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.datadoghq.com)",
+      "WebFetch(domain:www.datadoghq.com)",
+      "WebFetch(domain:registry.terraform.io)",
+      "Bash(dir:*)",
+      "Bash(docker compose up:*)",
+      "Bash(curl:*)",
+      "Bash(python:*)",
+      "Bash(timeout:*)",
+      "Bash(echo:*)",
+      "Bash(docker compose:*)",
+      "Bash(git init:*)",
+      "Bash(gh auth:*)",
+      "Bash(gh repo create:*)",
+      "Bash(git remote add:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

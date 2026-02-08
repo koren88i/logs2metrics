@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# SQLite
+*.db
+
+# Environment
+.env
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+nul
+Thumbs.db
+.DS_Store
+
+# Docker volumes
+esdata/
