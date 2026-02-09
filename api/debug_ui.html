@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Logs2Metrics Portal</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; line-height: 1.5; }
+  h1 { color: #58a6ff; font-size: 1.5rem; padding: 1rem 1.5rem; border-bottom: 1px solid #21262d; background: #161b22; }
+  h1 span { color: #8b949e; font-weight: 400; font-size: 0.9rem; margin-left: 0.5rem; }
+
+  .steps { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+
+  .step { background: #161b22; border: 1px solid #21262d; border-radius: 8px; margin-bottom: 1rem; overflow: hidden; }
+  .step.locked { opacity: 0.5; pointer-events: none; }
+  .step.active { border-color: #58a6ff; }
+  .step.done { border-color: #3fb950; }
+
+  .step-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; cursor: pointer; user-select: none; }
+  .step-num { width: 28px; height: 28px; border-radius: 50%; background: #21262d; color: #8b949e; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 600; flex-shrink: 0; }
+  .step.active .step-num { background: #1f6feb; color: #fff; }
+  .step.done .step-num { background: #238636; color: #fff; }
+  .step-title { font-weight: 600; font-size: 0.95rem; }
+  .step-desc { color: #8b949e; font-size: 0.8rem; }
+
+  .step-body { padding: 0 1rem 1rem; display: none; }
+  .step.active .step-body, .step.done .step-body { display: block; }
+
+  button { background: #238636; color: #fff; border: none; padding: 0.5rem 1.25rem; border-radius: 6px; font-size: 0.85rem; cursor: pointer; font-weight: 500; }
+  button:hover { background: #2ea043; }
+  button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+  button.danger { background: #da3633; }
+  button.danger:hover { background: #f85149; }
+  button.secondary { background: #21262d; color: #c9d1d9; }
+  button.secondary:hover { background: #30363d; }
+
+  .output { margin-top: 0.75rem; }
+  .panel { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 0.75rem; margin-top: 0.5rem; overflow-x: auto; }
+  .panel-label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+
+  pre { font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace; font-size: 0.8rem; white-space: pre-wrap; word-break: break-word; color: #c9d1d9; }
+  pre .key { color: #79c0ff; }
+  pre .str { color: #a5d6ff; }
+  pre .num { color: #d2a8ff; }
+  pre .bool { color: #ff7b72; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  th { text-align: left; padding: 0.4rem 0.6rem; background: #161b22; color: #58a6ff; border-bottom: 1px solid #21262d; font-weight: 600; white-space: nowrap; }
+  td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #21262d; }
+  tr:hover td { background: #1c2128; }
+
+  .side-by-side { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .side-col h3 { font-size: 0.9rem; color: #58a6ff; margin-bottom: 0.5rem; }
+  .side-col .metric-label { color: #3fb950; }
+
+  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+  .badge.high { background: #238636; color: #fff; }
+  .badge.mid { background: #9e6a03; color: #fff; }
+  .badge.low { background: #da3633; color: #fff; }
+
+  .stat { display: inline-block; background: #21262d; padding: 0.25rem 0.75rem; border-radius: 4px; margin-right: 0.5rem; margin-top: 0.25rem; font-size: 0.85rem; }
+  .stat b { color: #58a6ff; }
+
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 0.5rem; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .status-bar { padding: 0.5rem 1rem; background: #161b22; border-top: 1px solid #21262d; text-align: center; font-size: 0.8rem; color: #8b949e; }
+
+  /* Kibana connection bar */
+  .kibana-bar { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1.5rem; background: #161b22; border-bottom: 1px solid #21262d; flex-wrap: wrap; }
+  .kibana-bar label { font-size: 0.8rem; color: #8b949e; font-weight: 600; white-space: nowrap; }
+  .kibana-bar input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 0.3rem 0.5rem; font-size: 0.8rem; }
+  .kibana-bar .kb-status { font-size: 0.8rem; margin-left: 0.25rem; }
+
+  /* Tab bar */
+  .tab-bar { display: flex; gap: 0; background: #161b22; border-bottom: 1px solid #21262d; padding: 0 1.5rem; }
+  .tab-btn { background: none; color: #8b949e; border: none; padding: 0.6rem 1.25rem; font-size: 0.9rem; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; border-radius: 0; }
+  .tab-btn:hover { color: #c9d1d9; background: none; }
+  .tab-btn.active { color: #58a6ff; border-bottom-color: #58a6ff; background: none; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* Dashboard selector */
+  .dashboard-selector { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  .dashboard-selector label { font-size: 0.85rem; color: #8b949e; font-weight: 600; white-space: nowrap; }
+  .dashboard-selector select { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.85rem; min-width: 200px; }
+  .dashboard-selector .dash-desc { font-size: 0.8rem; color: #8b949e; margin-left: auto; }
+
+  /* Rules Manager */
+  .rules-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
+  .rules-header h2 { font-size: 1.1rem; color: #c9d1d9; }
+  .mgr-rule-card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+  .mgr-rule-card.status-active { border-left: 3px solid #3fb950; }
+  .mgr-rule-card.status-draft { border-left: 3px solid #8b949e; }
+  .mgr-rule-card.status-paused { border-left: 3px solid #d29922; }
+  .mgr-rule-card.status-error { border-left: 3px solid #f85149; }
+  .mgr-rule-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75rem; flex-wrap: wrap; }
+  .mgr-rule-info h4 { color: #c9d1d9; font-size: 0.9rem; margin-bottom: 0.25rem; }
+  .mgr-rule-meta { font-size: 0.8rem; color: #8b949e; line-height: 1.7; }
+  .mgr-rule-meta span { margin-right: 1rem; }
+  .mgr-rule-actions { display: flex; gap: 0.4rem; flex-shrink: 0; align-items: center; }
+  .mgr-rule-actions button { padding: 0.35rem 0.75rem; font-size: 0.8rem; }
+  .mgr-rule-expand { margin-top: 0.75rem; border-top: 1px solid #21262d; padding-top: 0.75rem; }
+  .edit-form { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 0.75rem; align-items: center; font-size: 0.85rem; }
+  .edit-form label { color: #8b949e; text-align: right; }
+  .edit-form input, .edit-form select { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+  .edit-form .readonly { opacity: 0.6; cursor: not-allowed; }
+  .edit-form .edit-buttons { grid-column: 1 / -1; display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
+
+  /* Panel cards for Step 3 */
+  .panel-card { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 0.75rem; margin-top: 0.75rem; }
+  .panel-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+  .panel-card-info { flex: 1; min-width: 200px; }
+  .panel-card-info h4 { color: #c9d1d9; font-size: 0.9rem; margin-bottom: 0.25rem; }
+  .panel-card-meta { font-size: 0.8rem; color: #8b949e; }
+  .panel-card-meta span { margin-right: 1rem; }
+  .panel-card-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+  .panel-card-actions select { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.8rem; }
+  .panel-card-result { margin-top: 0.5rem; }
+
+  /* Rule cards for Step 4 */
+  .rule-card { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 0.75rem; margin-top: 0.75rem; }
+  .rule-card.ready { border-color: #3fb950; }
+
+  @media (max-width: 800px) { .side-by-side { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Logs2Metrics Portal <span>self-service log-to-metric conversion</span></h1>
+
+<div class="kibana-bar">
+  <label>Kibana:</label>
+  <input type="text" id="kibanaUrl" placeholder="default (from server env)" style="min-width:280px">
+  <button class="secondary" id="authToggle" onclick="toggleKibanaAuth()" style="padding:0.3rem 0.6rem;font-size:0.8rem">Auth</button>
+  <span id="kibanaAuthFields" style="display:none">
+    <input type="text" id="kibanaUser" placeholder="username" style="width:100px">
+    <input type="password" id="kibanaPass" placeholder="password" style="width:100px">
+  </span>
+  <button class="secondary" onclick="testKibanaConnection()" style="padding:0.3rem 0.6rem;font-size:0.8rem">Test</button>
+  <span class="kb-status" id="kibanaStatus"></span>
+</div>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('pipeline')" id="tabBtnPipeline">Pipeline</button>
+  <button class="tab-btn" onclick="switchTab('rules')" id="tabBtnRules">Rules</button>
+</div>
+
+<div class="tab-content active" id="tab-pipeline">
+<div class="steps">
+
+  <!-- Dashboard selector -->
+  <div class="dashboard-selector">
+    <label>Dashboard:</label>
+    <select id="dashboardSelect" onchange="onDashboardChange()"><option value="">Loading...</option></select>
+    <div class="dash-desc" id="dashDesc"></div>
+  </div>
+
+  <!-- Step 1 -->
+  <div class="step active" id="step1">
+    <div class="step-header" onclick="toggleStep(1)">
+      <div class="step-num">1</div>
+      <div><div class="step-title">Generate Logs</div><div class="step-desc">Clear the index, then generate 200 fresh log entries</div></div>
+    </div>
+    <div class="step-body">
+      <button onclick="runStep1()">Reset &amp; Generate 200 Logs</button>
+      <button class="secondary" onclick="runStep1Toy()">Toy Scenario (10 identical logs)</button>
+      <div class="output" id="out1"></div>
+    </div>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="step locked" id="step2">
+    <div class="step-header" onclick="toggleStep(2)">
+      <div class="step-num">2</div>
+      <div><div class="step-title">See Raw Logs</div><div class="step-desc">Query Elasticsearch and display the log documents</div></div>
+    </div>
+    <div class="step-body">
+      <button onclick="runStep2()">Fetch Logs from ES</button>
+      <div class="output" id="out2"></div>
+    </div>
+  </div>
+
+  <!-- Step 3 -->
+  <div class="step locked" id="step3">
+    <div class="step-header" onclick="toggleStep(3)">
+      <div class="step-num">3</div>
+      <div><div class="step-title">Analyze Panels + Create Rules</div><div class="step-desc">Preview aggregations, score suitability, and create metric rules from candidates</div></div>
+    </div>
+    <div class="step-body">
+      <div id="panelList"></div>
+    </div>
+  </div>
+
+  <!-- Step 4 -->
+  <div class="step locked" id="step4">
+    <div class="step-header" onclick="toggleStep(4)">
+      <div class="step-num">4</div>
+      <div><div class="step-title">Created Rules + Transforms</div><div class="step-desc">Rules provisioned from panel analysis — waiting for transforms to process</div></div>
+    </div>
+    <div class="step-body">
+      <div id="ruleList"><div style="color:#8b949e;font-size:0.85rem">No rules created yet. Use "Create Rule" in Step 3.</div></div>
+    </div>
+  </div>
+
+  <!-- Step 5 -->
+  <div class="step locked" id="step5">
+    <div class="step-header" onclick="toggleStep(5)">
+      <div class="step-num">5</div>
+      <div><div class="step-title">Side-by-Side: Logs vs Metrics</div><div class="step-desc">Compare the original log aggregation query with the pre-computed metrics</div></div>
+    </div>
+    <div class="step-body">
+      <div id="ruleSelector" style="margin-bottom:0.75rem"></div>
+      <button onclick="runStep5()">Run Comparison</button>
+      <div class="output" id="out5"></div>
+    </div>
+  </div>
+
+</div>
+</div><!-- /tab-pipeline -->
+
+<div class="tab-content" id="tab-rules">
+<div class="steps">
+  <div class="rules-header">
+    <h2>Rules Manager</h2>
+    <button class="secondary" onclick="loadAllRules()">Refresh</button>
+  </div>
+  <div id="mgrRuleList"><div style="color:#8b949e;font-size:0.85rem">Loading rules...</div></div>
+</div>
+</div><!-- /tab-rules -->
+
+<div class="status-bar" id="statusBar">Ready. Select a dashboard and click "Reset & Generate" to start.</div>
+
+<script>
+let state = {
+  dashboardId: null,
+  dashboards: [],
+  panels: [],       // PanelAnalysis objects from dashboard
+  rules: [],        // {id, name, transformId, metricsIndex, status, ready}
+  pollIntervals: {},  // rule_id -> interval handle
+  mgrPollIntervals: {} // rules manager polling
+};
+
+function setStatus(msg) { document.getElementById('statusBar').innerHTML = msg; }
+function loading(msg) { return `<span class="spinner"></span>${msg}`; }
+
+function unlockStep(n) {
+  const el = document.getElementById('step' + n);
+  if (!el.classList.contains('locked')) return;
+  el.classList.remove('locked');
+  el.classList.add('active');
+}
+function markDone(n) {
+  const el = document.getElementById('step' + n);
+  el.classList.remove('active');
+  el.classList.add('done');
+}
+function toggleStep(n) {
+  const el = document.getElementById('step' + n);
+  if (el.classList.contains('locked')) return;
+}
+
+function syntaxHL(obj) {
+  const s = JSON.stringify(obj, null, 2);
+  return s.replace(/(".*?")\s*:/g, '<span class="key">$1</span>:')
+           .replace(/:\s*(".*?")/g, ': <span class="str">$1</span>')
+           .replace(/:\s*(\d+\.?\d*)/g, ': <span class="num">$1</span>')
+           .replace(/:\s*(true|false|null)/g, ': <span class="bool">$1</span>');
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: {'Content-Type': 'application/json'} };
+  // Inject Kibana connection override headers when a URL is entered
+  const kibUrl = document.getElementById('kibanaUrl')?.value?.trim();
+  if (kibUrl) {
+    opts.headers['X-Kibana-Url'] = kibUrl;
+    const kibUser = document.getElementById('kibanaUser')?.value?.trim();
+    const kibPass = document.getElementById('kibanaPass')?.value;
+    if (kibUser) opts.headers['X-Kibana-User'] = kibUser;
+    if (kibPass) opts.headers['X-Kibana-Pass'] = kibPass;
+  }
+  if (body) opts.body = JSON.stringify(body);
+  const resp = await fetch(path, opts);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(JSON.stringify(data));
+  return data;
+}
+
+// ── Kibana Connection ────────────────────────────────────────────
+
+function toggleKibanaAuth() {
+  const fields = document.getElementById('kibanaAuthFields');
+  fields.style.display = fields.style.display === 'none' ? 'inline' : 'none';
+}
+
+async function testKibanaConnection() {
+  const statusEl = document.getElementById('kibanaStatus');
+  statusEl.innerHTML = loading('Testing...');
+  try {
+    const data = await api('GET', '/api/kibana/test-connection');
+    statusEl.innerHTML = `<span style="color:#3fb950">Connected — Kibana ${data.kibana_version} (${data.status})</span>`;
+    loadDashboards();
+  } catch(e) {
+    let msg = e.message;
+    try { msg = JSON.parse(msg).detail || msg; } catch(_) {}
+    statusEl.innerHTML = `<span style="color:#f85149">Failed: ${msg}</span>`;
+  }
+}
+
+function getKibanaExternalUrl() {
+  const url = document.getElementById('kibanaUrl')?.value?.trim();
+  return url || 'http://localhost:5602';
+}
+
+// ── Tab Switching ────────────────────────────────────────────────
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  document.getElementById('tabBtn' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+  if (tab === 'rules') loadAllRules();
+}
+
+// ── Dashboard Selector ──────────────────────────────────────────
+
+async function loadDashboards() {
+  const sel = document.getElementById('dashboardSelect');
+  try {
+    const dashboards = await api('GET', '/api/kibana/dashboards');
+    state.dashboards = dashboards;
+    if (!dashboards.length) {
+      sel.innerHTML = '<option value="">No dashboards found</option>';
+      return;
+    }
+    sel.innerHTML = dashboards.map(d =>
+      `<option value="${d.id}">${d.title || d.id}</option>`
+    ).join('');
+    state.dashboardId = dashboards[0].id;
+    onDashboardChange();
+  } catch(e) {
+    sel.innerHTML = '<option value="">Error loading dashboards</option>';
+  }
+}
+
+function onDashboardChange() {
+  const sel = document.getElementById('dashboardSelect');
+  state.dashboardId = sel.value;
+  const d = state.dashboards.find(d => d.id === state.dashboardId);
+  document.getElementById('dashDesc').textContent = d && d.description ? d.description : '';
+}
+
+document.addEventListener('DOMContentLoaded', loadDashboards);
+
+const LOOKBACK_OPTIONS = `
+  <option value="now-1h">1 hour</option>
+  <option value="now-6h">6 hours</option>
+  <option value="now-1d">1 day</option>
+  <option value="now-7d" selected>7 days</option>
+  <option value="now-30d">30 days</option>
+  <option value="now-90d">90 days</option>
+  <option value="now-1y">1 year</option>
+`;
+
+// ── Step 1: Generate Logs ────────────────────────────────────────
+
+async function runStep1() {
+  const out = document.getElementById('out1');
+  out.innerHTML = loading('Deleting existing logs...');
+  try {
+    const del = await api('DELETE', '/api/debug/logs');
+    out.innerHTML = loading(`Cleared ${del.deleted.toLocaleString()} old docs. Generating 200 fresh logs...`);
+    const data = await api('POST', '/api/debug/generate', {count: 200});
+    out.innerHTML = `
+      <div class="stat">Cleared: <b>${del.deleted.toLocaleString()}</b> old docs</div>
+      <div class="stat">Generated: <b>${data.count_ingested}</b> fresh logs</div>
+      <div class="stat">Index: <b>${data.index}</b></div>
+      <div class="stat"><b>${(data.duration_seconds * 1000).toFixed(0)}ms</b></div>
+      <div class="panel"><div class="panel-label">Response</div><pre>${syntaxHL(data)}</pre></div>
+    `;
+    markDone(1); unlockStep(2);
+    setStatus('Step 1 done. Index has exactly 200 logs. Now fetch them from ES.');
+  } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+async function runStep1Toy() {
+  const out = document.getElementById('out1');
+  out.innerHTML = loading('Deleting existing logs...');
+  try {
+    const del = await api('DELETE', '/api/debug/logs');
+    out.innerHTML = loading(`Cleared ${del.deleted.toLocaleString()} old docs. Generating toy scenario...`);
+    const data = await api('POST', '/api/debug/generate-toy');
+    out.innerHTML = `
+      <div class="stat">Cleared: <b>${del.deleted.toLocaleString()}</b> old docs</div>
+      <div class="stat">Generated: <b>${data.count_ingested}</b> logs</div>
+      <div class="stat">Scenario: <b>${data.description}</b></div>
+      <div class="stat">Index: <b>${data.index}</b></div>
+      <div class="panel"><div class="panel-label">Response</div><pre>${syntaxHL(data)}</pre></div>
+    `;
+    markDone(1); unlockStep(2);
+    setStatus('Toy scenario loaded: 10 identical logs within 1 minute. Should compress to 1 metric point (count=10).');
+  } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+// ── Step 2: See Raw Logs ─────────────────────────────────────────
+
+async function runStep2() {
+  const out = document.getElementById('out2');
+  const query = {query: {match_all: {}}, sort: [{timestamp: 'desc'}], size: 10};
+  out.innerHTML = loading('Querying ES...');
+  try {
+    const data = await api('POST', '/api/es/search', {index: 'app-logs', body: query});
+    const hits = data.hits.hits;
+    let rows = hits.map(h => {
+      const s = h._source;
+      return `<tr>
+        <td>${new Date(s.timestamp).toLocaleString()}</td>
+        <td>${s.service}</td><td>${s.endpoint}</td>
+        <td style="color:${s.status_code >= 500 ? '#f85149' : s.status_code >= 400 ? '#d29922' : '#3fb950'}">${s.status_code}</td>
+        <td>${s.response_time_ms}ms</td><td>${s.level}</td>
+      </tr>`;
+    }).join('');
+    out.innerHTML = `
+      <div class="stat"><b>${data.hits.total.value.toLocaleString()}</b> total docs in index</div>
+      <div class="stat">Showing latest <b>10</b></div>
+      <div class="panel">
+        <div class="panel-label">Query</div>
+        <pre>${syntaxHL(query)}</pre>
+      </div>
+      <div class="panel" style="margin-top:0.5rem">
+        <table>
+          <tr><th>Timestamp</th><th>Service</th><th>Endpoint</th><th>Status</th><th>Latency</th><th>Level</th></tr>
+          ${rows}
+        </table>
+      </div>
+    `;
+    markDone(2); unlockStep(3);
+    loadPanels();
+    setStatus('Step 2 done. Dashboard panels loaded — preview aggregations, analyze, and create rules.');
+  } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+// ── Step 3: Per-Panel Analyze + Create Rule ──────────────────────
+
+async function loadPanels() {
+  const container = document.getElementById('panelList');
+  container.innerHTML = loading('Loading dashboard panels...');
+  try {
+    if (!state.dashboardId) { container.innerHTML = '<div style="color:#f85149">No dashboard selected.</div>'; return; }
+    const dashboard = await api('GET', '/api/kibana/dashboards/' + encodeURIComponent(state.dashboardId));
+    state.panels = dashboard.panels;
+
+    if (!state.panels.length) {
+      container.innerHTML = '<div style="color:#8b949e">No panels found in dashboard.</div>';
+      return;
+    }
+
+    container.innerHTML = `<div class="stat" style="margin-bottom:0.5rem">Dashboard: <b>${dashboard.title || dashboard.id}</b> — <b>${state.panels.length}</b> panels</div>`;
+
+    state.panels.forEach((p, idx) => {
+      const aggList = (p.agg_types || []).join(', ') || 'none';
+      const dims = (p.group_by_fields || []).join(', ') || 'none';
+      const metrics = (p.metrics || []).map(m => m.field ? `${m.type}(${m.field})` : m.type).join(', ') || 'none';
+      const isRawDocs = p.has_raw_docs;
+
+      container.innerHTML += `
+        <div class="panel-card" id="panelCard${idx}">
+          <div class="panel-card-header">
+            <div class="panel-card-info">
+              <h4>${p.title || p.panel_id}</h4>
+              <div class="panel-card-meta">
+                <span>Type: <b>${p.visualization_type || 'unknown'}</b></span>
+                <span>Index: <b>${p.index_pattern || 'n/a'}</b></span>
+                <span>Aggs: <b>${aggList}</b></span>
+                <span>Dims: <b>${dims}</b></span>
+                <span>Metrics: <b>${metrics}</b></span>
+                ${isRawDocs ? '<span style="color:#f85149">Raw docs (no aggregations)</span>' : ''}
+              </div>
+            </div>
+            <div class="panel-card-actions">
+              <button class="secondary" onclick="previewPanelAgg(${idx})" ${isRawDocs ? 'disabled' : ''}>Preview Agg</button>
+              <select id="lookback${idx}">${LOOKBACK_OPTIONS}</select>
+              <button onclick="analyzePanel(${idx})">Analyze</button>
+              <select id="timeBucket${idx}">
+                <option value="10s">10s</option>
+                <option value="1m" selected>1m</option>
+                <option value="5m">5m</option>
+                <option value="10m">10m</option>
+                <option value="1h">1h</option>
+              </select>
+              <label style="font-size:0.75rem;display:flex;align-items:center;gap:3px;cursor:pointer"><input type="checkbox" id="skipGuardrails${idx}"> Skip guardrails</label>
+              <button class="secondary" onclick="createRuleFromPanel(${idx})" ${isRawDocs ? 'disabled title="Cannot create rule from raw docs panel"' : ''}>Create Rule</button>
+            </div>
+          </div>
+          <div class="panel-card-result" id="panelResult${idx}"></div>
+        </div>
+      `;
+    });
+  } catch(e) { container.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+async function previewPanelAgg(idx) {
+  const panel = state.panels[idx];
+  const out = document.getElementById('panelResult' + idx);
+  out.innerHTML = loading('Running aggregation...');
+
+  const timeField = panel.time_field || 'timestamp';
+  const dims = panel.group_by_fields || [];
+  const metrics = panel.metrics || [];
+  const filterQuery = panel.filter_query
+    ? { query_string: { query: panel.filter_query } }
+    : { match_all: {} };
+
+  // Build agg query matching what this panel does
+  const innerAggs = {};
+  if (dims.length > 0) {
+    const dimAggs = {};
+    // Add metric sub-agg if panel has one
+    if (metrics.length > 0) {
+      const m = metrics[0];
+      if (m.type === 'avg' && m.field) dimAggs.metric_val = { avg: { field: m.field } };
+      else if (m.type === 'sum' && m.field) dimAggs.metric_val = { sum: { field: m.field } };
+    }
+    innerAggs.by_dim = { terms: { field: dims[0], size: 20 }, aggs: dimAggs };
+  } else if (metrics.length > 0) {
+    const m = metrics[0];
+    if (m.type === 'avg' && m.field) innerAggs.metric_val = { avg: { field: m.field } };
+    else if (m.type === 'sum' && m.field) innerAggs.metric_val = { sum: { field: m.field } };
+  }
+
+  const query = {
+    size: 0,
+    query: filterQuery,
+    aggs: {
+      by_bucket: {
+        date_histogram: { field: timeField, fixed_interval: '1m', min_doc_count: 0 },
+        aggs: innerAggs
+      }
+    }
+  };
+
+  try {
+    const index = panel.index_pattern || 'app-logs';
+    const data = await api('POST', '/api/es/search', { index, body: query });
+    const allBuckets = data.aggregations.by_bucket.buckets;
+    const buckets = allBuckets.filter(b => b.doc_count > 0);
+
+    // Determine value label
+    let valLabel = 'Count';
+    if (metrics.length > 0 && metrics[0].field) {
+      valLabel = `${metrics[0].type}(${metrics[0].field})`;
+    }
+    const dimLabel = dims.length > 0 ? dims[0] : 'Dimension';
+
+    let rows = '';
+    for (const b of buckets) {
+      if (b.by_dim) {
+        for (const sb of b.by_dim.buckets) {
+          const val = sb.metric_val !== undefined ? sb.metric_val.value : sb.doc_count;
+          rows += `<tr><td>${new Date(b.key_as_string).toLocaleString()}</td><td>${sb.key}</td><td>${val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-'}</td></tr>`;
+        }
+      } else {
+        const val = b.metric_val !== undefined ? b.metric_val.value : b.doc_count;
+        rows += `<tr><td>${new Date(b.key_as_string).toLocaleString()}</td><td>-</td><td>${val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-'}</td></tr>`;
+      }
+    }
+
+    out.innerHTML = `
+      <div style="margin-top:0.5rem">
+        <span class="stat">Total docs: <b>${data.hits.total.value.toLocaleString()}</b></span>
+        <span class="stat">Buckets with data: <b>${buckets.length}</b></span>
+        <span class="stat">Query: <b>${data.took}ms</b></span>
+      </div>
+      <div class="panel" style="margin-top:0.5rem">
+        <div class="panel-label">Aggregation Query (what this Kibana panel runs)</div>
+        <pre>${syntaxHL(query)}</pre>
+      </div>
+      <div class="panel" style="margin-top:0.5rem">
+        <div class="panel-label">Results (${buckets.length} buckets, 1m interval)</div>
+        <table>
+          <tr><th>Time Bucket</th><th>${dimLabel}</th><th>${valLabel}</th></tr>
+          ${rows || '<tr><td colspan="3" style="color:#8b949e">No matching documents</td></tr>'}
+        </table>
+      </div>
+    `;
+  } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+async function analyzePanel(idx) {
+  const out = document.getElementById('panelResult' + idx);
+  const lookback = document.getElementById('lookback' + idx).value;
+  out.innerHTML = loading('Scoring panel...');
+  try {
+    const url = '/api/analyze/dashboard/' + encodeURIComponent(state.dashboardId) + (lookback ? `?lookback=${encodeURIComponent(lookback)}` : '');
+    const data = await api('POST', url);
+
+    // Find matching panel by panel_id
+    const panel = state.panels[idx];
+    const scored = data.panels.find(p => p.panel.panel_id === panel.panel_id);
+    if (!scored) {
+      out.innerHTML = '<div style="color:#f85149">Panel not found in analysis results.</div>';
+      return;
+    }
+
+    const score = scored.score.total;
+    const maxScore = scored.score.max_total;
+    const cls = score >= 70 ? 'high' : score >= 40 ? 'mid' : 'low';
+    const label = score >= 70 ? 'HIGH' : score >= 40 ? 'MEDIUM' : 'LOW';
+
+    let breakdownRows = scored.score.breakdown.map(b => {
+      const pct = b.max_points > 0 ? Math.round(b.points / b.max_points * 100) : 0;
+      const barColor = b.points === b.max_points ? '#3fb950' : b.points > 0 ? '#d29922' : '#484f58';
+      return `<tr>
+        <td>${b.signal}</td>
+        <td><b>${b.points}</b>/${b.max_points}</td>
+        <td><div style="background:#21262d;border-radius:3px;height:8px;width:80px;display:inline-block;vertical-align:middle"><div style="background:${barColor};border-radius:3px;height:8px;width:${pct}%"></div></div></td>
+        <td style="color:#8b949e;font-size:0.75rem">${b.explanation}</td>
+      </tr>`;
+    }).join('');
+
+    out.innerHTML = `
+      <div style="margin-top:0.5rem">
+        <span class="badge ${cls}" style="font-size:0.85rem">${score}/${maxScore} ${label}</span>
+        <span style="color:#8b949e;font-size:0.8rem;margin-left:0.5rem">Lookback: ${lookback || 'auto'}</span>
+      </div>
+      <div class="panel" style="margin-top:0.5rem">
+        <table>
+          <tr><th>Signal</th><th>Score</th><th></th><th>Explanation</th></tr>
+          ${breakdownRows}
+        </table>
+      </div>
+      <div style="margin-top:0.5rem;font-size:0.8rem;color:#8b949e">${scored.score.recommendation_text}</div>
+    `;
+  } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+function inferComputeType(panel) {
+  // Look at the panel's metrics to determine compute type + field
+  const metrics = panel.metrics || [];
+  if (!metrics.length) return { type: 'count' };
+
+  const m = metrics[0];
+  if (m.type === 'sum') return { type: 'sum', field: m.field };
+  if (m.type === 'avg') return { type: 'avg', field: m.field };
+  if (m.type === 'percentiles') return { type: 'distribution', field: m.field, percentiles: [50, 75, 90, 95, 99] };
+  // count, value_count, cardinality, min, max → default to count
+  return { type: 'count' };
+}
+
+async function createRuleFromPanel(idx) {
+  const panel = state.panels[idx];
+  const out = document.getElementById('panelResult' + idx);
+
+  const compute = inferComputeType(panel);
+  const filterQuery = panel.filter_query
+    ? { query_string: { query: panel.filter_query } }
+    : null;
+
+  const timeBucket = document.getElementById('timeBucket' + idx).value;
+  const skipGuardrails = document.getElementById('skipGuardrails' + idx).checked;
+
+  const ruleBody = {
+    name: panel.title || `Rule from ${panel.panel_id}`,
+    owner: 'debug-ui',
+    source: {
+      index_pattern: panel.index_pattern || 'app-logs',
+      time_field: panel.time_field || 'timestamp',
+      filter_query: filterQuery,
+    },
+    group_by: {
+      time_bucket: timeBucket,
+      dimensions: panel.group_by_fields || [],
+    },
+    compute: compute,
+    origin: {
+      dashboard_id: state.dashboardId,
+      dashboard_title: (state.dashboards.find(d => d.id === state.dashboardId) || {}).title || state.dashboardId,
+      panel_id: panel.panel_id,
+      panel_title: panel.title || panel.panel_id,
+    },
+    status: 'active',
+  };
+
+  out.innerHTML = loading('Creating rule and provisioning transform...');
+  try {
+    const url = '/api/rules' + (skipGuardrails ? '?skip_guardrails=true' : '');
+    const rule = await api('POST', url, ruleBody);
+
+    const ruleEntry = {
+      id: rule.id,
+      name: rule.name,
+      transformId: `l2m-rule-${rule.id}`,
+      metricsIndex: `l2m-metrics-rule-${rule.id}`,
+      status: rule.status,
+      ready: false,
+      ruleBody: ruleBody,
+      sourcePanel: panel,
+    };
+    state.rules.push(ruleEntry);
+
+    out.innerHTML = `<div style="margin-top:0.5rem">
+      <span class="stat">Rule <b>#${rule.id}</b> created</span>
+      <span class="stat">Status: <b style="color:${rule.status === 'active' ? '#3fb950' : '#f85149'}">${rule.status}</b></span>
+    </div>`;
+
+    // Disable the create button (second .secondary button; first is Preview Agg)
+    const btns = document.querySelectorAll(`#panelCard${idx} .panel-card-actions button.secondary`);
+    const createBtn = btns[btns.length - 1];
+    if (createBtn) { createBtn.disabled = true; createBtn.textContent = 'Rule #' + rule.id; }
+
+    // Unlock step 4, add rule card, start polling
+    unlockStep(4);
+    addRuleCard(ruleEntry);
+    if (rule.status === 'active') {
+      startPolling(ruleEntry);
+    }
+
+    setStatus(`Rule #${rule.id} created from panel "${panel.title}". Check Step 4 for status.`);
+  } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+// ── Step 4: Rule List + Polling ──────────────────────────────────
+
+function addRuleCard(entry) {
+  const container = document.getElementById('ruleList');
+  // Remove placeholder text
+  if (state.rules.length === 1) container.innerHTML = '';
+
+  container.innerHTML += `
+    <div class="rule-card" id="ruleCard${entry.id}">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
+        <div>
+          <b style="color:#c9d1d9">Rule #${entry.id}</b>: ${entry.name}
+          <div class="panel-card-meta" style="margin-top:0.25rem">
+            <span>Transform: <b>${entry.transformId}</b></span>
+            <span>Index: <b>${entry.metricsIndex}</b></span>
+          </div>
+        </div>
+        <div id="ruleStatus${entry.id}">${loading('Waiting for transform...')}</div>
+      </div>
+      <div id="ruleDetail${entry.id}" style="margin-top:0.5rem">
+        <div class="panel">
+          <div class="panel-label">Rule body sent to POST /api/rules</div>
+          <pre>${syntaxHL(entry.ruleBody)}</pre>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function startPolling(entry) {
+  let attempts = 0;
+  const interval = setInterval(async () => {
+    attempts++;
+    try {
+      const status = await api('GET', `/api/rules/${entry.id}/status`);
+      const statusEl = document.getElementById('ruleStatus' + entry.id);
+      if (status.health === 'green' && status.last_checkpoint) {
+        clearInterval(interval);
+        delete state.pollIntervals[entry.id];
+        entry.ready = true;
+
+        statusEl.innerHTML = `
+          <span class="stat">Health: <b style="color:#3fb950">${status.health}</b></span>
+          <span class="stat">Processed: <b>${status.docs_processed.toLocaleString()}</b></span>
+          <span class="stat">Indexed: <b>${status.docs_indexed.toLocaleString()}</b></span>
+        `;
+
+        const card = document.getElementById('ruleCard' + entry.id);
+        if (card) card.classList.add('ready');
+
+        // Get transform definition
+        try {
+          const transform = await api('GET', `/api/transforms/${entry.transformId}`);
+          const detailEl = document.getElementById('ruleDetail' + entry.id);
+          detailEl.innerHTML += `
+            <div class="panel" style="margin-top:0.5rem">
+              <div class="panel-label">ES Transform Definition</div>
+              <pre>${syntaxHL(transform.transforms ? transform.transforms[0] : transform)}</pre>
+            </div>
+            <div class="panel" style="margin-top:0.5rem">
+              <div class="panel-label">Transform Status</div>
+              <pre>${syntaxHL(status)}</pre>
+            </div>
+          `;
+        } catch(e) {}
+
+        // Check if we should unlock step 5
+        if (state.rules.some(r => r.ready)) {
+          markDone(4);
+          unlockStep(5);
+          updateRuleSelector();
+          setStatus('Transform(s) ready. Run side-by-side comparison in Step 5.');
+        }
+      } else {
+        const statusEl = document.getElementById('ruleStatus' + entry.id);
+        if (statusEl) statusEl.innerHTML = loading(`Waiting... (${attempts * 2}s)`);
+      }
+    } catch(e) {}
+    if (attempts > 30) {
+      clearInterval(interval);
+      delete state.pollIntervals[entry.id];
+      const statusEl = document.getElementById('ruleStatus' + entry.id);
+      if (statusEl) statusEl.innerHTML = '<span style="color:#d29922">Timed out. Transform may still be starting.</span>';
+      entry.ready = true; // allow comparison attempt anyway
+      if (state.rules.some(r => r.ready)) {
+        markDone(4); unlockStep(5);
+        updateRuleSelector();
+      }
+    }
+  }, 2000);
+  state.pollIntervals[entry.id] = interval;
+}
+
+// ── Step 5: Side-by-Side Comparison ──────────────────────────────
+
+function updateRuleSelector() {
+  const container = document.getElementById('ruleSelector');
+  const readyRules = state.rules.filter(r => r.ready);
+  if (readyRules.length <= 1) {
+    container.innerHTML = '';
+    return;
+  }
+  const options = readyRules.map(r =>
+    `<option value="${r.id}">Rule #${r.id}: ${r.name}</option>`
+  ).join('');
+  container.innerHTML = `
+    <label style="font-size:0.85rem;color:#8b949e;margin-right:0.5rem">Compare rule:</label>
+    <select id="compareRule" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:0.4rem 0.6rem;font-size:0.85rem;">
+      ${options}
+    </select>
+  `;
+}
+
+function getSelectedRule() {
+  const sel = document.getElementById('compareRule');
+  if (sel) {
+    const id = parseInt(sel.value);
+    return state.rules.find(r => r.id === id);
+  }
+  return state.rules.find(r => r.ready);
+}
+
+async function runComparison(ruleInfo, outputEl) {
+  // ruleInfo: {id, name, source, group_by, compute, metricsIndex}
+  outputEl.innerHTML = loading('Running both queries...');
+
+  const timeBucket = ruleInfo.group_by.time_bucket || '1m';
+  const timeField = ruleInfo.source.time_field || 'timestamp';
+  const dims = ruleInfo.group_by.dimensions || [];
+  const compute = ruleInfo.compute;
+
+  // Derive the metric value field name (must match elastic_backend.py _build_aggregations)
+  let metricField, metricLabel;
+  if (compute.type === 'count') { metricField = 'doc_count'; metricLabel = 'Count'; }
+  else if (compute.type === 'sum') { metricField = `sum_${compute.field}`; metricLabel = `Sum(${compute.field})`; }
+  else if (compute.type === 'avg') { metricField = `avg_${compute.field}`; metricLabel = `Avg(${compute.field})`; }
+  else if (compute.type === 'distribution') { metricField = `pct_${compute.field}`; metricLabel = `Pct(${compute.field})`; }
+  else { metricField = 'doc_count'; metricLabel = 'Value'; }
+
+  const logAggMetric = {};
+  if (compute.type === 'avg') logAggMetric.metric_val = { avg: { field: compute.field } };
+  else if (compute.type === 'sum') logAggMetric.metric_val = { sum: { field: compute.field } };
+
+  const logQuery = {
+    size: 0,
+    query: ruleInfo.source.filter_query || {match_all: {}},
+    aggs: {
+      by_bucket: {
+        date_histogram: {field: timeField, fixed_interval: timeBucket, min_doc_count: 0},
+        aggs: {}
+      }
+    }
+  };
+  if (dims.length > 0) {
+    logQuery.aggs.by_bucket.aggs.by_dim = { terms: { field: dims[0] }, aggs: Object.assign({}, logAggMetric) };
+  } else {
+    Object.assign(logQuery.aggs.by_bucket.aggs, logAggMetric);
+  }
+
+  const metricQuery = { size: 200, query: {match_all: {}}, sort: [{[timeField]: 'desc'}] };
+
+  try {
+    const sourceIndex = ruleInfo.source.index_pattern;
+    const [logResult, metricResult] = await Promise.all([
+      api('POST', '/api/es/search', {index: sourceIndex, body: logQuery}),
+      api('POST', '/api/es/search', {index: ruleInfo.metricsIndex, body: metricQuery})
+    ]);
+
+    const allBuckets = logResult.aggregations.by_bucket.buckets;
+    const logBuckets = allBuckets.filter(b => b.doc_count > 0);
+    let logRows = '';
+    for (const b of logBuckets) {
+      if (b.by_dim) {
+        for (const sb of b.by_dim.buckets) {
+          const val = sb.metric_val !== undefined ? sb.metric_val.value : sb.doc_count;
+          logRows += `<tr><td>${new Date(b.key_as_string).toLocaleString()}</td><td>${sb.key}</td><td>${val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-'}</td></tr>`;
+        }
+      } else {
+        const val = b.metric_val !== undefined ? b.metric_val.value : b.doc_count;
+        logRows += `<tr><td>${new Date(b.key_as_string).toLocaleString()}</td><td>-</td><td>${val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-'}</td></tr>`;
+      }
+    }
+
+    const metricHits = metricResult.hits.hits;
+    const dimField = dims.length > 0 ? dims[0] : null;
+    let metricRows = metricHits.map(h => {
+      const s = h._source;
+      const dimVal = dimField ? (s[dimField] || '-') : '-';
+      let val = s[metricField];
+      if (val === undefined || val === null) val = '-';
+      else if (typeof val === 'number') val = val.toFixed(2);
+      else if (typeof val === 'object') val = JSON.stringify(val);
+      return `<tr><td>${new Date(s[timeField]).toLocaleString()}</td><td>${dimVal}</td><td>${val}</td></tr>`;
+    }).join('');
+
+    const logTotal = logResult.hits.total.value;
+    const metricTotal = metricResult.hits.total.value;
+    const dimLabel = dimField || 'Dimension';
+
+    outputEl.innerHTML = `
+      <div style="margin-bottom:0.75rem">
+        <div class="stat">Rule: <b>#${ruleInfo.id} ${ruleInfo.name}</b></div>
+        <div class="stat">Compute: <b>${compute.type}${compute.field ? '(' + compute.field + ')' : ''}</b> | Bucket: <b>${timeBucket}</b> | Dims: <b>${dims.join(', ') || 'none'}</b></div>
+        <div class="stat">Log docs scanned: <b style="color:#f85149">${logTotal.toLocaleString()}</b></div>
+        <div class="stat">Metric docs: <b style="color:#3fb950">${metricTotal.toLocaleString()}</b></div>
+        <div class="stat">Log query: <b>${logResult.took}ms</b></div>
+        <div class="stat">Metric query: <b>${metricResult.took}ms</b></div>
+        <div class="stat">Reduction: <b style="color:#3fb950">${logTotal > 0 ? ((1 - metricTotal / logTotal) * 100).toFixed(0) : 0}% fewer docs</b></div>
+      </div>
+      <div class="side-by-side">
+        <div class="side-col">
+          <h3>Log Aggregation Query</h3>
+          <div class="panel">
+            <div class="panel-label">Query against ${sourceIndex} (${logResult.took}ms)</div>
+            <pre>${syntaxHL(logQuery)}</pre>
+          </div>
+          <div class="panel" style="margin-top:0.5rem">
+            <div class="panel-label">Results (${logBuckets.length} buckets with data, ${timeBucket} interval)</div>
+            <table>
+              <tr><th>Time Bucket</th><th>${dimLabel}</th><th>${metricLabel}</th></tr>
+              ${logRows || '<tr><td colspan="3" style="color:#8b949e">No results</td></tr>'}
+            </table>
+          </div>
+        </div>
+        <div class="side-col">
+          <h3 class="metric-label">Pre-Computed Metrics</h3>
+          <div class="panel">
+            <div class="panel-label">Query against ${ruleInfo.metricsIndex} (${metricResult.took}ms)</div>
+            <pre>${syntaxHL(metricQuery)}</pre>
+          </div>
+          <div class="panel" style="margin-top:0.5rem">
+            <div class="panel-label">Results (${metricHits.length} pre-aggregated rows)</div>
+            <table>
+              <tr><th>Time Bucket</th><th>${dimLabel}</th><th>${metricLabel}</th></tr>
+              ${metricRows || '<tr><td colspan="3" style="color:#8b949e">No results</td></tr>'}
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+  } catch(e) { outputEl.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+async function runStep5() {
+  const out = document.getElementById('out5');
+  const rule = getSelectedRule();
+  if (!rule) {
+    out.innerHTML = '<div style="color:#f85149">No ready rules to compare.</div>';
+    return;
+  }
+
+  const ruleInfo = {
+    id: rule.id,
+    name: rule.name,
+    source: rule.ruleBody.source,
+    group_by: rule.ruleBody.group_by,
+    compute: rule.ruleBody.compute,
+    metricsIndex: rule.metricsIndex
+  };
+
+  await runComparison(ruleInfo, out);
+
+  // Add cleanup button after comparison
+  out.innerHTML += `
+    <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #21262d;">
+      <button class="danger" onclick="cleanup()">Cleanup: Delete All Rules + Transforms</button>
+    </div>
+  `;
+  markDone(5);
+  setStatus('Done! Full pipeline visible. Click Cleanup when finished.');
+}
+
+// ── Rules Manager Tab ────────────────────────────────────────────
+
+async function loadAllRules() {
+  const container = document.getElementById('mgrRuleList');
+  container.innerHTML = loading('Loading rules...');
+
+  // Stop existing manager polling
+  for (const id of Object.keys(state.mgrPollIntervals)) {
+    clearTimeout(state.mgrPollIntervals[id]);
+  }
+  state.mgrPollIntervals = {};
+
+  try {
+    const rules = await api('GET', '/api/rules');
+    if (!rules.length) {
+      container.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">No rules found. Create rules from the Pipeline tab.</div>';
+      return;
+    }
+
+    container.innerHTML = `<div class="stat" style="margin-bottom:0.75rem"><b>${rules.length}</b> rule(s)</div>`;
+
+    for (const rule of rules) {
+      const computeDesc = rule.compute.field
+        ? `${rule.compute.type}(${rule.compute.field})`
+        : rule.compute.type;
+      const dims = (rule.group_by.dimensions || []).join(', ') || 'none';
+      const filter = rule.source.filter_query
+        ? (typeof rule.source.filter_query === 'object' && rule.source.filter_query.query_string
+           ? rule.source.filter_query.query_string.query
+           : JSON.stringify(rule.source.filter_query))
+        : 'none';
+      const statusCls = `status-${rule.status}`;
+      const statusColor = rule.status === 'active' ? '#3fb950' : rule.status === 'error' ? '#f85149' : rule.status === 'paused' ? '#d29922' : '#8b949e';
+
+      // Action buttons based on status
+      let actions = '';
+      actions += `<button class="secondary" onclick="mgrEditRule(${rule.id})">Edit</button>`;
+      if (rule.status === 'active') {
+        actions += `<button class="secondary" onclick="mgrCompareRule(${rule.id})">Compare</button>`;
+        actions += `<button class="secondary" onclick="mgrChangeStatus(${rule.id}, 'paused')">Pause</button>`;
+      } else {
+        actions += `<button onclick="mgrChangeStatus(${rule.id}, 'active')">Activate</button>`;
+      }
+      actions += `<button class="danger" onclick="mgrDeleteRule(${rule.id}, '${rule.name.replace(/'/g, "\\'")}')">Delete</button>`;
+
+      container.innerHTML += `
+        <div class="mgr-rule-card ${statusCls}" id="mgrCard${rule.id}">
+          <div class="mgr-rule-header">
+            <div class="mgr-rule-info">
+              <h4>Rule #${rule.id}: ${rule.name} <span class="badge ${rule.status === 'active' ? 'high' : rule.status === 'error' ? 'low' : 'mid'}">${rule.status}</span></h4>
+              <div class="mgr-rule-meta">
+                <span>Compute: <b>${computeDesc}</b></span>
+                <span>Bucket: <b>${rule.group_by.time_bucket}</b></span>
+                <span>Dims: <b>${dims}</b></span><br>
+                <span>Source: <b>${rule.source.index_pattern}</b></span>
+                <span>Filter: <b>${filter}</b></span>
+                <span>Time field: <b>${rule.source.time_field}</b></span><br>
+                <span>Transform: <b>l2m-rule-${rule.id}</b></span>
+                <span>Metrics index: <b>l2m-metrics-rule-${rule.id}</b></span>
+                ${rule.origin ? `<br><span>From: <a href="${getKibanaExternalUrl()}/app/dashboards#/view/${encodeURIComponent(rule.origin.dashboard_id)}" target="_blank" style="color:#58a6ff">${rule.origin.dashboard_title}</a> &rsaquo; <b>${rule.origin.panel_title}</b></span>` : ''}
+              </div>
+              <div id="mgrStatus${rule.id}" style="margin-top:0.35rem"></div>
+            </div>
+            <div class="mgr-rule-actions">${actions}</div>
+          </div>
+          <div class="mgr-rule-expand" id="mgrExpand${rule.id}" style="display:none"></div>
+        </div>
+      `;
+
+      // Poll status for active rules
+      if (rule.status === 'active') {
+        mgrPollStatus(rule.id);
+      } else if (rule.status === 'error') {
+        const statusEl = document.getElementById('mgrStatus' + rule.id);
+        try {
+          const st = await api('GET', `/api/rules/${rule.id}/status`);
+          statusEl.innerHTML = `<span class="stat">Health: <b style="color:#f85149">${st.health}</b></span>${st.error ? `<span class="stat" style="color:#f85149">${st.error}</span>` : ''}`;
+        } catch(e) {
+          statusEl.innerHTML = '<span style="color:#f85149;font-size:0.8rem">Could not fetch status</span>';
+        }
+      }
+    }
+  } catch(e) { container.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+function mgrShowStatus(statusEl, st) {
+  const colorMap = { green: '#3fb950', yellow: '#d29922', red: '#f85149', stopped: '#8b949e', unknown: '#f85149' };
+  const color = colorMap[st.health] || '#8b949e';
+  let html = `<span class="stat">Health: <b style="color:${color}">${st.health}</b></span>`;
+  if (st.docs_processed != null) html += `<span class="stat">Processed: <b>${st.docs_processed.toLocaleString()}</b></span>`;
+  if (st.docs_indexed != null) html += `<span class="stat">Indexed: <b>${st.docs_indexed.toLocaleString()}</b></span>`;
+  if (st.error) html += `<span class="stat" style="color:#f85149">${st.error}</span>`;
+  statusEl.innerHTML = html;
+}
+
+function mgrPollStatus(ruleId) {
+  const statusEl = document.getElementById('mgrStatus' + ruleId);
+  if (!statusEl) return;
+  statusEl.innerHTML = loading('Checking...');
+
+  // Single fetch — show whatever we get. Only poll further if yellow (transitioning).
+  let attempts = 0;
+  const poll = async () => {
+    attempts++;
+    try {
+      const st = await api('GET', `/api/rules/${ruleId}/status`);
+      mgrShowStatus(statusEl, st);
+      // Only keep polling if transform is in a transitional state
+      if (st.health === 'yellow' && attempts < 30) {
+        state.mgrPollIntervals[ruleId] = setTimeout(poll, 2000);
+      }
+    } catch(e) {
+      statusEl.innerHTML = `<span style="color:#8b949e;font-size:0.8rem">No backend status available</span>`;
+    }
+  };
+  poll();
+}
+
+async function mgrCompareRule(ruleId) {
+  const expandEl = document.getElementById('mgrExpand' + ruleId);
+  // Toggle
+  if (expandEl.style.display !== 'none' && expandEl.dataset.mode === 'compare') {
+    expandEl.style.display = 'none';
+    return;
+  }
+  expandEl.style.display = 'block';
+  expandEl.dataset.mode = 'compare';
+
+  try {
+    const rule = await api('GET', `/api/rules/${ruleId}`);
+    const ruleInfo = {
+      id: rule.id,
+      name: rule.name,
+      source: rule.source,
+      group_by: rule.group_by,
+      compute: rule.compute,
+      metricsIndex: `l2m-metrics-rule-${rule.id}`
+    };
+    await runComparison(ruleInfo, expandEl);
+  } catch(e) { expandEl.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+async function mgrDeleteRule(ruleId, ruleName) {
+  if (!confirm(`Delete rule #${ruleId} "${ruleName}" and its transform + metrics index?`)) return;
+  try {
+    // Stop polling if active
+    if (state.mgrPollIntervals[ruleId]) {
+      clearTimeout(state.mgrPollIntervals[ruleId]);
+      delete state.mgrPollIntervals[ruleId];
+    }
+    await fetch(`/api/rules/${ruleId}`, {method: 'DELETE'});
+    const card = document.getElementById('mgrCard' + ruleId);
+    if (card) card.remove();
+    setStatus(`Rule #${ruleId} deleted. Transform and metrics index cleaned up.`);
+    // Check if list is now empty
+    const remaining = document.querySelectorAll('.mgr-rule-card');
+    if (remaining.length === 0) {
+      document.getElementById('mgrRuleList').innerHTML = '<div style="color:#8b949e;font-size:0.85rem">No rules found. Create rules from the Pipeline tab.</div>';
+    }
+  } catch(e) { setStatus(`Error deleting rule: ${e.message}`); }
+}
+
+async function mgrChangeStatus(ruleId, newStatus) {
+  try {
+    await api('PUT', `/api/rules/${ruleId}`, { status: newStatus });
+    setStatus(`Rule #${ruleId} status changed to "${newStatus}".`);
+    loadAllRules(); // re-render
+  } catch(e) {
+    setStatus(`Error: ${e.message}`);
+  }
+}
+
+async function mgrEditRule(ruleId) {
+  const expandEl = document.getElementById('mgrExpand' + ruleId);
+  // Toggle off if already in edit mode
+  if (expandEl.style.display !== 'none' && expandEl.dataset.mode === 'edit') {
+    expandEl.style.display = 'none';
+    return;
+  }
+  expandEl.style.display = 'block';
+  expandEl.dataset.mode = 'edit';
+  expandEl.innerHTML = loading('Loading rule...');
+
+  try {
+    const rule = await api('GET', `/api/rules/${ruleId}`);
+    const computeTypes = ['count', 'sum', 'avg', 'distribution'];
+    const timeBuckets = ['10s', '1m', '5m', '10m', '1h'];
+
+    expandEl.innerHTML = `
+      <div class="edit-form">
+        <label>Name</label>
+        <input type="text" id="editName${ruleId}" value="${rule.name}">
+        <label>Time bucket</label>
+        <select id="editBucket${ruleId}">
+          ${timeBuckets.map(b => `<option value="${b}" ${b === rule.group_by.time_bucket ? 'selected' : ''}>${b}</option>`).join('')}
+        </select>
+        <label>Dimensions</label>
+        <input type="text" id="editDims${ruleId}" value="${(rule.group_by.dimensions || []).join(', ')}" placeholder="comma-separated fields">
+        <label>Compute type</label>
+        <select id="editCompute${ruleId}" onchange="mgrEditComputeChange(${ruleId})">
+          ${computeTypes.map(t => `<option value="${t}" ${t === rule.compute.type ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <label>Compute field</label>
+        <input type="text" id="editField${ruleId}" value="${rule.compute.field || ''}" placeholder="required for sum/avg/distribution" ${rule.compute.type === 'count' ? 'disabled' : ''}>
+        <label>Source index</label>
+        <input type="text" value="${rule.source.index_pattern}" disabled class="readonly">
+        <label>Time field</label>
+        <input type="text" value="${rule.source.time_field}" disabled class="readonly">
+        <label>Filter</label>
+        <input type="text" value="${rule.source.filter_query ? JSON.stringify(rule.source.filter_query) : 'none'}" disabled class="readonly">
+        <div class="edit-buttons">
+          <button class="secondary" onclick="mgrCancelEdit(${ruleId})">Cancel</button>
+          <button onclick="mgrSaveEdit(${ruleId}, '${rule.status}')">Save</button>
+        </div>
+      </div>
+    `;
+  } catch(e) { expandEl.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+function mgrEditComputeChange(ruleId) {
+  const computeType = document.getElementById('editCompute' + ruleId).value;
+  const fieldInput = document.getElementById('editField' + ruleId);
+  fieldInput.disabled = (computeType === 'count');
+  if (computeType === 'count') fieldInput.value = '';
+}
+
+function mgrCancelEdit(ruleId) {
+  const expandEl = document.getElementById('mgrExpand' + ruleId);
+  expandEl.style.display = 'none';
+}
+
+async function mgrSaveEdit(ruleId, originalStatus) {
+  const name = document.getElementById('editName' + ruleId).value.trim();
+  const timeBucket = document.getElementById('editBucket' + ruleId).value;
+  const dimsRaw = document.getElementById('editDims' + ruleId).value;
+  const dims = dimsRaw ? dimsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const computeType = document.getElementById('editCompute' + ruleId).value;
+  const computeField = document.getElementById('editField' + ruleId).value.trim();
+
+  if (!name) { alert('Name is required'); return; }
+  if (computeType !== 'count' && !computeField) { alert('Field is required for ' + computeType); return; }
+
+  const compute = { type: computeType };
+  if (computeType !== 'count') compute.field = computeField;
+  if (computeType === 'distribution') compute.percentiles = [50, 75, 90, 95, 99];
+
+  const expandEl = document.getElementById('mgrExpand' + ruleId);
+  expandEl.innerHTML = loading('Saving...');
+
+  try {
+    // If active, deprovision first by setting to draft
+    if (originalStatus === 'active' || originalStatus === 'paused') {
+      await api('PUT', `/api/rules/${ruleId}`, { status: 'draft' });
+    }
+
+    // Save the updated config
+    await api('PUT', `/api/rules/${ruleId}`, {
+      name: name,
+      group_by: { time_bucket: timeBucket, dimensions: dims },
+      compute: compute
+    });
+
+    // Re-provision if it was active
+    if (originalStatus === 'active') {
+      await api('PUT', `/api/rules/${ruleId}`, { status: 'active' });
+    }
+
+    setStatus(`Rule #${ruleId} updated.`);
+    loadAllRules(); // re-render
+  } catch(e) {
+    expandEl.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>Save failed: ${e.message}</pre></div>`;
+  }
+}
+
+// ── Cleanup ──────────────────────────────────────────────────────
+
+async function cleanup() {
+  if (!state.rules.length) return;
+  const ids = state.rules.map(r => r.id).join(', ');
+  if (!confirm(`Delete rule(s) ${ids} and their transforms + metrics indices?`)) return;
+  try {
+    // Stop all polling (pipeline + manager)
+    for (const id of Object.keys(state.pollIntervals)) {
+      clearInterval(state.pollIntervals[id]);
+    }
+    for (const id of Object.keys(state.mgrPollIntervals)) {
+      clearTimeout(state.mgrPollIntervals[id]);
+    }
+    // Delete all rules
+    for (const rule of state.rules) {
+      try { await fetch(`/api/rules/${rule.id}`, {method: 'DELETE'}); } catch(e) {}
+    }
+    setStatus(`${state.rules.length} rule(s) deleted. Transforms and metrics indices cleaned up.`);
+    state.rules = [];
+    state.panels = [];
+    state.pollIntervals = {};
+    state.mgrPollIntervals = {};
+    // Reset all steps
+    for (let i = 1; i <= 5; i++) {
+      const el = document.getElementById('step' + i);
+      el.classList.remove('done', 'active', 'locked');
+      if (i === 1) el.classList.add('active');
+      else el.classList.add('locked');
+    }
+    document.getElementById('out1').innerHTML = '';
+    document.getElementById('out2').innerHTML = '';
+    document.getElementById('panelList').innerHTML = '';
+    document.getElementById('ruleList').innerHTML = '<div style="color:#8b949e;font-size:0.85rem">No rules created yet. Use "Create Rule" in Step 3.</div>';
+    document.getElementById('ruleSelector').innerHTML = '';
+    document.getElementById('out5').innerHTML = '';
+  } catch(e) { setStatus(`Cleanup error: ${e.message}`); }
+}
+</script>
+</body>
+</html>

@@ -60,6 +60,7 @@ This plan implements a **Logs2Metrics portal** that analyzes Kibana dashboards, 
    group_by: { time_bucket, dimensions[] }
    compute: { type: count|sum|avg|distribution, field?, percentiles?[] }
    backend_config: { type: elastic, retention_days }
+   origin?: { dashboard_id, dashboard_title, panel_id, panel_title }
    status: draft|active|paused|error
    created_at, updated_at
    ```
@@ -80,7 +81,7 @@ This plan implements a **Logs2Metrics portal** that analyzes Kibana dashboards, 
 
 ---
 
-## Phase 3: Elasticsearch & Kibana Read-Only Connectors
+## Phase 3: Elasticsearch & Kibana Read-Only Connectors [COMPLETED]
 
 **Goal:** The service can read index metadata from ES and dashboard definitions from Kibana.
 
@@ -105,15 +106,15 @@ This plan implements a **Logs2Metrics portal** that analyzes Kibana dashboards, 
    ```
 
 **Test criteria:**
-- [ ] `list_indices("app-logs*")` returns index with correct doc count
-- [ ] `get_mapping` returns known fields (service, status_code, etc.)
-- [ ] `get_field_cardinality("app-logs", "service")` returns reasonable number
-- [ ] `list_dashboards()` returns seeded dashboards
-- [ ] `parse_panels()` correctly extracts aggs, group-by fields, index for each panel type
+- [x] `list_indices("app-logs*")` returns index with correct doc count
+- [x] `get_mapping` returns known fields (service, status_code, etc.)
+- [x] `get_field_cardinality("app-logs", "service")` returns reasonable number
+- [x] `list_dashboards()` returns seeded dashboards
+- [x] `parse_panels()` correctly extracts aggs, group-by fields, index for each panel type
 
 ---
 
-## Phase 4: Suitability Scoring + Candidate Analysis
+## Phase 4: Suitability Scoring + Candidate Analysis [COMPLETED]
 
 **Goal:** Given a parsed panel, produce a deterministic suitability score (0-100) with a human-readable explanation.
 
@@ -136,15 +137,15 @@ This plan implements a **Logs2Metrics portal** that analyzes Kibana dashboards, 
    - `POST /api/analyze/dashboard/{id}` — returns full analysis
 
 **Test criteria:**
-- [ ] "Errors/min by service" panel scores >= 80 (high candidate)
-- [ ] "Avg latency by endpoint" panel scores >= 60 (candidate)
-- [ ] "Recent log lines" panel scores < 30 (not a candidate)
-- [ ] Each score includes human-readable explanation text
-- [ ] API returns structured JSON with all panels scored
+- [x] "Errors/min by service" panel scores >= 80 (high candidate) — scored 85
+- [x] "Avg latency by endpoint" panel scores >= 60 (candidate) — scored 85
+- [x] "Recent log lines" panel scores < 30 (not a candidate) — scored 20
+- [x] Each score includes human-readable explanation text
+- [x] API returns structured JSON with all panels scored
 
 ---
 
-## Phase 5: Cost Estimation + Guardrails
+## Phase 5: Cost Estimation + Guardrails [COMPLETED]
 
 **Goal:** Before rule creation, estimate savings and block rules that would increase cost.
 
@@ -168,15 +169,15 @@ This plan implements a **Logs2Metrics portal** that analyzes Kibana dashboards, 
    - `POST /api/rules` — now validates guardrails before accepting
 
 **Test criteria:**
-- [ ] Rule with 2 low-cardinality dimensions passes all guardrails
-- [ ] Rule grouping by `request_id` fails cardinality guardrail with explanation
-- [ ] Rule where metric storage > log storage fails net-savings guardrail
-- [ ] Cost estimate returns plausible numbers for seeded data
-- [ ] Guardrail failures include actionable suggested fixes
+- [x] Rule with 2 low-cardinality dimensions passes all guardrails
+- [x] Rule grouping by `request_id` fails cardinality guardrail with explanation
+- [x] Rule where metric storage > log storage fails net-savings guardrail
+- [x] Cost estimate returns plausible numbers for seeded data
+- [x] Guardrail failures include actionable suggested fixes
 
 ---
 
-## Phase 6: Elastic Metrics Backend (Transform Provisioning)
+## Phase 6: Elastic Metrics Backend (Transform Provisioning) [COMPLETED]
 
 **Goal:** A created rule actually materializes metrics in Elasticsearch via continuous transforms.
 
@@ -203,12 +204,12 @@ This plan implements a **Logs2Metrics portal** that analyzes Kibana dashboards, 
    - `GET /api/rules/{id}/status` returns backend health
 
 **Test criteria:**
-- [ ] Creating an active rule provisions an ES transform
-- [ ] Transform processes existing logs into metrics index
-- [ ] Metrics index contains expected aggregated documents (correct time buckets, dimensions, values)
-- [ ] `get_status` returns running transform with processed doc count > 0
-- [ ] Deleting a rule removes the transform cleanly
-- [ ] Querying metrics index is faster than equivalent log aggregation
+- [x] Creating an active rule provisions an ES transform
+- [x] Transform processes existing logs into metrics index
+- [x] Metrics index contains expected aggregated documents (correct time buckets, dimensions, values)
+- [x] `get_status` returns running transform with processed doc count > 0
+- [x] Deleting a rule removes the transform cleanly
+- [x] Querying metrics index is faster than equivalent log aggregation
 
 ---
 
@@ -227,12 +228,13 @@ This plan implements a **Logs2Metrics portal** that analyzes Kibana dashboards, 
    - Select dashboard -> see panel analysis table -> click "Create metric" on a high-scoring panel -> review pre-filled rule -> see guardrail validation -> confirm -> rule created -> transform running
 
 **Test criteria:**
-- [ ] Can browse and select a Kibana dashboard from the portal
-- [ ] Panel analysis table shows scores, savings, and recommendations
-- [ ] Clicking "Create metric" opens pre-filled wizard
-- [ ] Guardrail violations shown inline with suggestions
-- [ ] Successful rule creation shows transform running status
-- [ ] End-to-end: dashboard -> analysis -> rule -> verified metrics in ES
+- [x] Can browse and select a Kibana dashboard from the portal
+- [x] Panel analysis table shows scores, savings, and recommendations
+- [x] Clicking "Create metric" opens pre-filled wizard
+- [x] Guardrail violations shown inline with suggestions
+- [x] Successful rule creation shows transform running status
+- [x] End-to-end: dashboard -> analysis -> rule -> verified metrics in ES
+- [x] Rules Manager shows origin (dashboard + panel) with clickable Kibana link
 
 ---
 

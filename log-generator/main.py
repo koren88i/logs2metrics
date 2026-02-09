@@ -98,6 +98,69 @@ def generate_logs(req: GenerateRequest):
     return last_batch
 
 
+@app.post("/generate-toy")
+def generate_toy_scenario():
+    """Generate a small, predictable toy dataset for end-to-end testing.
+
+    Creates 10 identical logs within the same hour:
+      - Same service (auth-service), endpoint (/api/login), tenant (acme-corp)
+      - All status 200, level INFO, response_time_ms 42.0
+      - Timestamps spread within a single 1-minute window
+
+    This should compress to exactly 1 metric point with count=10
+    when grouped by (service, endpoint) at a 1m bucket.
+    """
+    global last_batch
+    start = time.time()
+    ensure_index()
+
+    now = datetime.now(timezone.utc)
+    # All logs within the same minute
+    base_ts = now.replace(second=0, microsecond=0) - timedelta(minutes=5)
+
+    actions = []
+    for i in range(10):
+        doc = {
+            "timestamp": (base_ts + timedelta(seconds=i * 5)).isoformat(),
+            "service": "auth-service",
+            "endpoint": "/api/login",
+            "status_code": 200,
+            "response_time_ms": 42.0,
+            "tenant": "acme-corp",
+            "level": "INFO",
+            "message": "INFO: /api/login responded 200",
+        }
+        actions.append({"_index": ES_INDEX, "_source": doc})
+
+    success, errors = helpers.bulk(es, actions, raise_on_error=False)
+    duration = round(time.time() - start, 2)
+
+    last_batch = {
+        "count_requested": 10,
+        "count_ingested": success,
+        "errors": len(errors) if isinstance(errors, list) else 0,
+        "duration_seconds": duration,
+        "index": ES_INDEX,
+        "generated_at": now.isoformat(),
+        "toy_scenario": True,
+        "description": "10 identical logs (auth-service, /api/login, acme-corp) within 1 minute. Expect 1 metric point with count=10.",
+    }
+    return last_batch
+
+
+@app.delete("/logs")
+def delete_all_logs():
+    """Delete all documents from the log index."""
+    if not es.indices.exists(index=ES_INDEX):
+        return {"deleted": 0, "index": ES_INDEX}
+    result = es.delete_by_query(
+        index=ES_INDEX,
+        body={"query": {"match_all": {}}},
+        refresh=True,
+    )
+    return {"deleted": result["deleted"], "index": ES_INDEX}
+
+
 @app.get("/status")
 def get_status():
     if not last_batch:
@@ -121,9 +184,11 @@ def ui():
   label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 6px; }
   input { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #e1e4e8; font-size: 16px; margin-bottom: 16px; }
   input:focus { outline: none; border-color: #58a6ff; }
-  button { width: 100%; padding: 12px; border-radius: 6px; border: none; background: #238636; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; }
+  button { width: 100%; padding: 12px; border-radius: 6px; border: none; background: #238636; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; margin-bottom: 8px; }
   button:hover { background: #2ea043; }
   button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+  button.danger { background: #da3633; }
+  button.danger:hover { background: #f85149; }
   .status { margin-top: 20px; padding: 16px; border-radius: 8px; background: #161b22; font-size: 13px; line-height: 1.7; }
   .status .label { color: #8b949e; }
   .status .value { color: #e1e4e8; font-weight: 500; }
@@ -137,6 +202,7 @@ def ui():
   <label for="count">Batch size (number of logs)</label>
   <input type="number" id="count" value="1000" min="1" max="100000">
   <button id="btn" onclick="send()">Send Batch</button>
+  <button id="delBtn" class="danger" onclick="deleteAll()">Delete All Logs</button>
   <div class="status" id="status">No batches sent yet.</div>
 </div>
 <script>
@@ -162,6 +228,22 @@ async function send() {
   }
   btn.disabled = false;
   btn.textContent = 'Send Batch';
+}
+async function deleteAll() {
+  const btn = document.getElementById('delBtn');
+  const status = document.getElementById('status');
+  if (!confirm('Delete all logs from the index?')) return;
+  btn.disabled = true;
+  btn.textContent = 'Deleting...';
+  try {
+    const res = await fetch('/logs', { method: 'DELETE' });
+    const data = await res.json();
+    status.innerHTML = '<span class="highlight">' + data.deleted.toLocaleString() + '</span> docs deleted from <span class="value">' + data.index + '</span>';
+  } catch (e) {
+    status.innerHTML = '<span class="error">Failed: ' + e.message + '</span>';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Delete All Logs';
 }
 </script>
 </body>

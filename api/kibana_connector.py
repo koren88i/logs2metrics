@@ -1,9 +1,13 @@
 """Kibana read-only connector.
 
 Reads dashboards and saved objects via the Kibana REST API.
+Supports optional per-request connection override (URL + basic auth).
 """
 
+from __future__ import annotations
+
 import json
+from dataclasses import dataclass
 
 import httpx
 
@@ -17,14 +21,42 @@ from connector_models import (
 
 HEADERS = {"kbn-xsrf": "true"}
 
-# Kibana saved objects API redirects on individual GET-by-ID requests
-_client = httpx.Client(headers=HEADERS, follow_redirects=True)
+# Default client for the docker-compose Kibana (no auth)
+_default_client = httpx.Client(headers=HEADERS, follow_redirects=True)
 
 
-def list_dashboards() -> list[DashboardSummary]:
+@dataclass
+class KibanaConnection:
+    """Optional override for Kibana URL + basic-auth credentials."""
+
+    url: str
+    username: str | None = None
+    password: str | None = None
+
+
+def _get_client_and_url(
+    conn: KibanaConnection | None,
+) -> tuple[httpx.Client, str]:
+    """Return (httpx_client, base_url) for the given connection or defaults."""
+    if conn is None:
+        return _default_client, KIBANA_URL
+    auth = None
+    if conn.username and conn.password:
+        auth = httpx.BasicAuth(conn.username, conn.password)
+    client = httpx.Client(headers=HEADERS, follow_redirects=True, auth=auth)
+    return client, conn.url
+
+
+# ── Public API ────────────────────────────────────────────────────────
+
+
+def list_dashboards(
+    conn: KibanaConnection | None = None,
+) -> list[DashboardSummary]:
     """Return all dashboards with id, title, description."""
-    response = _client.get(
-        f"{KIBANA_URL}/api/saved_objects/_find",
+    client, base_url = _get_client_and_url(conn)
+    response = client.get(
+        f"{base_url}/api/saved_objects/_find",
         params={"type": "dashboard", "per_page": 100},
     )
     response.raise_for_status()
@@ -39,18 +71,25 @@ def list_dashboards() -> list[DashboardSummary]:
     ]
 
 
-def get_dashboard(dashboard_id: str) -> dict:
+def get_dashboard(
+    dashboard_id: str,
+    conn: KibanaConnection | None = None,
+) -> dict:
     """Return the full saved object for a dashboard."""
-    response = _client.get(
-        f"{KIBANA_URL}/api/saved_objects/dashboard/{dashboard_id}",
+    client, base_url = _get_client_and_url(conn)
+    response = client.get(
+        f"{base_url}/api/saved_objects/dashboard/{dashboard_id}",
     )
     response.raise_for_status()
     return response.json()
 
 
-def get_dashboard_with_panels(dashboard_id: str) -> DashboardDetail:
+def get_dashboard_with_panels(
+    dashboard_id: str,
+    conn: KibanaConnection | None = None,
+) -> DashboardDetail:
     """Fetch a dashboard and parse all its panels into PanelAnalysis objects."""
-    dashboard = get_dashboard(dashboard_id)
+    dashboard = get_dashboard(dashboard_id, conn=conn)
     attrs = dashboard["attributes"]
 
     panels_json = json.loads(attrs.get("panelsJSON", "[]"))
@@ -69,7 +108,7 @@ def get_dashboard_with_panels(dashboard_id: str) -> DashboardDetail:
         ref_id = ref.get("id", "")
         ref_type = ref.get("type", panel.get("type", ""))
 
-        analysis = _resolve_and_parse_panel(panel, ref_id, ref_type)
+        analysis = _resolve_and_parse_panel(panel, ref_id, ref_type, conn=conn)
         panel_analyses.append(analysis)
 
     return DashboardDetail(
@@ -80,17 +119,37 @@ def get_dashboard_with_panels(dashboard_id: str) -> DashboardDetail:
     )
 
 
+def get_data_view_index_pattern(
+    data_view_id: str,
+    conn: KibanaConnection | None = None,
+) -> str | None:
+    """Resolve a Kibana data view ID to its ES index pattern string."""
+    client, base_url = _get_client_and_url(conn)
+    response = client.get(
+        f"{base_url}/api/data_views/data_view/{data_view_id}",
+    )
+    if response.status_code != 200:
+        return None
+    return response.json().get("data_view", {}).get("title")
+
+
+# ── Internal helpers ──────────────────────────────────────────────────
+
+
 def _resolve_and_parse_panel(
-    panel: dict, ref_id: str, ref_type: str
+    panel: dict,
+    ref_id: str,
+    ref_type: str,
+    conn: KibanaConnection | None = None,
 ) -> PanelAnalysis:
     """Fetch referenced saved object and parse it into a PanelAnalysis."""
     panel_id = panel.get("panelIndex", "")
     panel_title = panel.get("title", "")
 
     if ref_type == "search":
-        return _parse_saved_search(panel_id, panel_title, ref_id)
+        return _parse_saved_search(panel_id, panel_title, ref_id, conn=conn)
     elif ref_type == "visualization":
-        return _parse_visualization(panel_id, panel_title, ref_id)
+        return _parse_visualization(panel_id, panel_title, ref_id, conn=conn)
     else:
         return PanelAnalysis(
             panel_id=panel_id,
@@ -100,18 +159,22 @@ def _resolve_and_parse_panel(
 
 
 def _parse_saved_search(
-    panel_id: str, title: str, search_id: str
+    panel_id: str,
+    title: str,
+    search_id: str,
+    conn: KibanaConnection | None = None,
 ) -> PanelAnalysis:
     """Parse a saved search (always has_raw_docs=True, no aggs)."""
-    response = _client.get(
-        f"{KIBANA_URL}/api/saved_objects/search/{search_id}",
+    client, base_url = _get_client_and_url(conn)
+    response = client.get(
+        f"{base_url}/api/saved_objects/search/{search_id}",
     )
     response.raise_for_status()
     obj = response.json()
     attrs = obj["attributes"]
     refs = obj.get("references", [])
 
-    index_pattern = _extract_index_from_refs(refs)
+    index_pattern = _extract_index_from_refs(refs, conn=conn)
 
     search_source = json.loads(
         attrs.get("kibanaSavedObjectMeta", {}).get("searchSourceJSON", "{}")
@@ -129,18 +192,22 @@ def _parse_saved_search(
 
 
 def _parse_visualization(
-    panel_id: str, title: str, vis_id: str
+    panel_id: str,
+    title: str,
+    vis_id: str,
+    conn: KibanaConnection | None = None,
 ) -> PanelAnalysis:
     """Fetch a visualization saved object and parse its visState aggs."""
-    response = _client.get(
-        f"{KIBANA_URL}/api/saved_objects/visualization/{vis_id}",
+    client, base_url = _get_client_and_url(conn)
+    response = client.get(
+        f"{base_url}/api/saved_objects/visualization/{vis_id}",
     )
     response.raise_for_status()
     obj = response.json()
     attrs = obj["attributes"]
     refs = obj.get("references", [])
 
-    index_pattern = _extract_index_from_refs(refs)
+    index_pattern = _extract_index_from_refs(refs, conn=conn)
 
     search_source = json.loads(
         attrs.get("kibanaSavedObjectMeta", {}).get("searchSourceJSON", "{}")
@@ -191,11 +258,20 @@ def _parse_visualization(
     )
 
 
-def _extract_index_from_refs(references: list[dict]) -> str | None:
-    """Find the index-pattern ID from a saved object's references."""
+def _extract_index_from_refs(
+    references: list[dict],
+    conn: KibanaConnection | None = None,
+) -> str | None:
+    """Find the ES index pattern from a saved object's references.
+
+    References contain a data view ID, not the actual ES index name.
+    Resolve via the Kibana data views API, falling back to the raw ID.
+    """
     for ref in references:
         if ref.get("type") == "index-pattern":
-            return ref.get("id")
+            data_view_id = ref.get("id")
+            resolved = get_data_view_index_pattern(data_view_id, conn=conn)
+            return resolved or data_view_id
     return None
 
 

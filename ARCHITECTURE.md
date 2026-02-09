@@ -44,9 +44,10 @@ A platform service that derives metrics from existing Elasticsearch logs, driven
 
 ### Log Generator (`log-generator/`)
 - FastAPI service with inline HTML UI
-- `POST /generate { count }` — creates a batch of structured logs
+- `POST /generate { count }` — creates a batch of structured logs (random, spread across last 24h)
+- `POST /generate-toy` — creates a predictable toy dataset: 10 identical logs (auth-service, /api/login, acme-corp, status 200, 42ms) within a single 1-minute window, for verifiable end-to-end testing
+- `DELETE /logs` — deletes all documents from the log index
 - `GET /status` — last batch result
-- Logs spread across last 24h for realistic dashboard rendering
 
 ### Seed Dashboards (`seed-dashboards/`)
 - Python script using Kibana saved objects NDJSON import API
@@ -55,14 +56,21 @@ A platform service that derives metrics from existing Elasticsearch logs, driven
 ### API Service (`api/`)
 - FastAPI + SQLModel + SQLite
 - `LogMetricRule` CRUD at `/api/rules`
+- ES connector (`es_connector.py`) — index metadata, mappings, cardinality, stats via `elasticsearch-py`
+- Kibana connector (`kibana_connector.py`) — dashboard listing, panel parsing via `httpx`; supports per-request URL + basic auth override via `KibanaConnection` dataclass
+- Connector response models (`connector_models.py`) — IndexInfo, IndexMapping, FieldCardinality, IndexStats, DashboardSummary, PanelAnalysis, DashboardDetail
+- Database (`database.py`) — SQLite engine + session + auto-migration for new columns
+- Config (`config.py`) — ES_URL / KIBANA_URL from environment variables
+- Scoring engine (`scoring.py`) — deterministic 0-95 suitability score with 6 weighted signals
+- Dashboard analyzer (`analyzer.py`) — orchestrates connectors + scoring, resolves field types
+- Cost estimator (`cost_estimator.py`) — compares log vs metric storage cost, estimates query speedup
+- Guardrails (`guardrails.py`) — 4 pre-creation checks: dimension limit, cardinality, high-cardinality fields, net savings
+- Backend interface (`backend.py`) — abstract `MetricsBackend` ABC + response models (TransformHealth, ProvisionResult, BackendStatus)
+- Elastic backend (`elastic_backend.py`) — ES transform provisioning, status, deprovisioning via `elasticsearch-py`
+- Portal UI (`debug_ui.html`) — self-service portal with two tabs served at `GET /debug` (see below):
+  - **Pipeline tab**: 5-step interactive walkthrough with dynamic dashboard selector
+  - **Rules Manager tab**: persistent rule CRUD (view, edit, compare, activate/pause, delete)
 - Swagger UI at `/docs`
-
-### Planned (Not Yet Implemented)
-- ES + Kibana read-only connectors (Phase 3)
-- Suitability scoring engine (Phase 4)
-- Cost estimator + guardrails (Phase 5)
-- ElasticMetricsBackend — ES transforms (Phase 6)
-- Portal UI — React + Vite (Phase 7)
 
 ---
 
@@ -102,11 +110,163 @@ logs2metrics/
   api/
     Dockerfile
     requirements.txt
-    main.py                   # FastAPI CRUD endpoints
+    main.py                   # FastAPI CRUD + connector + analysis endpoints
     models.py                 # LogMetricRule SQLModel + Pydantic schemas
     database.py               # SQLite engine + session
-  ui/                         # [Phase 7] React + Vite frontend
+    config.py                 # ES_URL, KIBANA_URL from env vars
+    connector_models.py       # Pydantic models for connector responses
+    es_connector.py           # ES read-only connector (elasticsearch-py)
+    kibana_connector.py       # Kibana read-only connector (httpx)
+    scoring.py                # Suitability scoring engine (0-95)
+    analyzer.py               # Dashboard analyzer (scoring orchestrator)
+    cost_estimator.py         # Log vs metric storage cost comparison
+    guardrails.py             # Pre-creation validation (cardinality, dimensions, savings)
+    backend.py                # Abstract MetricsBackend interface + response models
+    elastic_backend.py        # ES transform provisioning (ILM, index, transform lifecycle)
+    debug_ui.html             # Portal UI: Pipeline (5-step walkthrough) + Rules Manager (served at GET /debug)
 ```
+
+---
+
+## API Endpoints
+
+### Rule CRUD + Backend
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/rules?skip_guardrails=false` | Create rule (guardrails + provision if active; `skip_guardrails=true` bypasses checks) |
+| GET | `/api/rules` | List rules |
+| GET | `/api/rules/{id}` | Get rule |
+| PUT | `/api/rules/{id}` | Update rule (handles status transitions) |
+| DELETE | `/api/rules/{id}` | Delete rule (deprovisions if active) |
+| GET | `/api/rules/{id}/status` | Backend health + processing stats |
+
+### ES Connector
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/es/indices?pattern=*` | List indices (name, doc count, size) |
+| GET | `/api/es/indices/{index}/mapping` | Field names, types, aggregatable |
+| GET | `/api/es/indices/{index}/cardinality/{field}` | Approx distinct count |
+| GET | `/api/es/indices/{index}/stats` | Doc count, size, query rate |
+
+### Kibana Connector
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/kibana/dashboards` | List dashboards (id, title) |
+| GET | `/api/kibana/dashboards/{id}` | Dashboard with parsed PanelAnalysis list |
+| GET | `/api/kibana/test-connection` | Test Kibana connectivity, return version + health |
+
+All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass` headers to override the default server connection.
+
+### Analysis
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/analyze/dashboard/{id}?lookback=now-7d` | Score all panels (optional lookback override) |
+
+### Cost Estimation + Guardrails
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/estimate` | Cost estimate + guardrail validation for a draft rule |
+
+### Portal UI + Proxies
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/debug` | Portal UI: Pipeline + Rules Manager |
+| POST | `/api/debug/generate` | Proxy to log-generator (avoids CORS) |
+| POST | `/api/debug/generate-toy` | Proxy to log-generator toy scenario |
+| DELETE | `/api/debug/logs` | Proxy to log-generator delete endpoint |
+| POST | `/api/es/search` | Thin ES search proxy for portal UI |
+| GET | `/api/transforms/{id}` | Proxy to ES _transform API |
+
+---
+
+## Portal UI (`GET /debug`)
+
+A self-contained single-page application at `http://localhost:8091/debug` with two tabs. No external dependencies beyond the running Docker stack.
+
+### Kibana Connection Bar
+
+At the top of the portal, a connection bar allows pointing at any Kibana instance:
+- **URL input**: Enter a Kibana URL (e.g. `http://remote-kibana:5601`). Leave empty to use the server's default `KIBANA_URL` env var.
+- **Auth toggle**: Click "Auth" to reveal username/password fields for HTTP basic auth.
+- **Test button**: Probes `GET /api/kibana/test-connection` and shows Kibana version + health status.
+- On successful test, dashboards auto-reload from the new Kibana.
+- Connection headers (`X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass`) are injected on every API call when a URL is entered.
+
+### Tab 1: Pipeline (5-Step Walkthrough)
+
+**Dashboard selector** at the top populates from `GET /api/kibana/dashboards`. Replaces hardcoded dashboard ID.
+
+```
+Step 1: Generate Logs
+  ├── "Reset & Generate 200 Logs" — random realistic data across 24h
+  └── "Toy Scenario (10 identical logs)" — predictable dataset for verification
+       10x (auth-service, /api/login, 200, 42ms) in one 1-minute window
+       → expect 1 metric point with count=10
+
+Step 2: See Raw Logs
+  └── Fetches latest 10 docs from ES, displays in table
+       Unlocks Step 3 and auto-loads dashboard panels
+
+Step 3: Analyze Panels + Create Rules
+  ├── Per-panel card showing: type, index, aggs, dimensions, metrics
+  └── Per-panel actions:
+       ├── "Preview Agg" — runs the panel's ES aggregation inline (date_histogram + terms + metric)
+       │    Shows query, matching docs, buckets with data, results table
+       ├── "Analyze" — runs suitability scoring (0-95) with per-signal breakdown bars
+       ├── Time bucket selector (10s / 1m / 5m / 10m / 1h)
+       ├── Skip guardrails checkbox
+       └── "Create Rule" — auto-constructs RuleCreate from panel, POSTs to /api/rules
+            Infers compute type from panel metrics (count/avg/sum/distribution)
+            Maps group-by fields and filter queries
+
+Step 4: Created Rules + Transforms
+  └── Shows provisioned rules with live polling:
+       ├── Transform ID + metrics index name
+       ├── Rule body JSON
+       ├── Health status (polls every 2s until green + checkpointed)
+       └── Transform definition + stats on ready
+
+Step 5: Side-by-Side Comparison
+  └── For each rule, runs two queries in parallel:
+       ├── LEFT: Log aggregation query against source index
+       │    (date_histogram + terms + metric agg, matching rule's filter/bucket/dims)
+       └── RIGHT: Simple fetch from pre-computed metrics index
+       Shows: query JSON, results table, docs scanned vs metric docs, query times, reduction %
+       Column headers adapt to compute type: Count / Avg(field) / Sum(field) / Pct(field)
+```
+
+### Tab 2: Rules Manager
+
+Persistent rule management across sessions. Auto-loads on tab switch via `GET /api/rules`.
+
+```
+Per-rule card:
+  ├── Rule metadata: name, status badge, compute type, dimensions, time bucket
+  ├── Source info: index pattern, filter, time field
+  ├── Transform info: ID, metrics index name
+  ├── Origin: "From: Dashboard Title > Panel Title" with clickable Kibana link
+  ├── Live status: health, docs processed/indexed (single fetch; polls only for yellow/transitioning)
+  └── Actions (by status):
+       ├── active:  [Edit] [Compare ▼] [Pause] [Delete]
+       ├── draft:   [Edit] [Activate] [Delete]
+       ├── paused:  [Edit] [Activate] [Delete]
+       └── error:   [Edit] [Activate] [Delete]
+
+Compare: expands inline with side-by-side log agg vs metrics (reuses runComparison)
+Edit: inline form (name, time bucket, dimensions, compute); deprovisions→saves→re-provisions active rules
+Activate/Pause: status transitions via PUT /api/rules/{id}
+Delete: confirms, then DELETE /api/rules/{id} (API handles deprovision)
+```
+
+### Key Behaviors
+
+- **Kibana connection**: Session-level URL override with optional basic auth. Empty field = server default. All API calls inject connection headers when a URL is entered.
+- **Dashboard selector**: Dynamically populated; drives panel loading and analysis across the Pipeline tab.
+- **Guardrail bypass**: Small test datasets often fail the net_savings guardrail (metric storage > log storage). The "Skip guardrails" checkbox passes `?skip_guardrails=true` to the API.
+- **Status display (Rules Manager)**: Shows whatever the backend returns immediately (green/red/unknown/stopped with docs processed). Only polls further if health is `yellow` (transitioning). Does NOT require a checkpoint — avoids the infinite "Checking..." bug with zero-match transforms.
+- **Zero-match handling (Pipeline tab)**: Transforms that match zero documents (e.g. error filter with all-200 data) are considered ready once they reach `health: green` with a completed checkpoint, regardless of `docs_processed`.
+- **Cleanup**: Button at the end of Pipeline deletes all session rules + transforms + metrics indices and resets the UI.
+- **Rules Manager persistence**: Shows all rules from the database regardless of which session created them.
 
 ---
 
@@ -144,6 +304,11 @@ LogMetricRule
   backend_config:
     type: elastic               # future: prometheus
     retention_days: int         # default 450
+  origin:
+    dashboard_id: string        # Kibana dashboard ID (e.g. "l2m-app-overview")
+    dashboard_title: string     # Human-readable dashboard name
+    panel_id: string            # Panel ID within the dashboard
+    panel_title: string         # Human-readable panel name
   status: draft|active|paused|error
   created_at: datetime
   updated_at: datetime

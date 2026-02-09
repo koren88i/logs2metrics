@@ -65,6 +65,13 @@ class BackendConfig(BaseModel):
     retention_days: int = Field(default=450, ge=1, le=730)
 
 
+class OriginConfig(BaseModel):
+    dashboard_id: str = Field(..., description="Kibana dashboard ID")
+    dashboard_title: str = Field(default="")
+    panel_id: str = Field(..., description="Panel ID within the dashboard")
+    panel_title: str = Field(default="")
+
+
 # ── SQLModel table ────────────────────────────────────────────────────
 
 class LogMetricRule(SQLModel, table=True):
@@ -79,6 +86,7 @@ class LogMetricRule(SQLModel, table=True):
     group_by: dict = SQLField(default={}, sa_column=Column(JSON))
     compute: dict = SQLField(default={}, sa_column=Column(JSON))
     backend_config: dict = SQLField(default={}, sa_column=Column(JSON))
+    origin: dict = SQLField(default={}, sa_column=Column(JSON))
 
     status: str = SQLField(default=RuleStatus.draft.value)
 
@@ -95,6 +103,7 @@ class RuleCreate(BaseModel):
     group_by: GroupByConfig = Field(default_factory=GroupByConfig)
     compute: ComputeConfig
     backend_config: BackendConfig = Field(default_factory=BackendConfig)
+    origin: Optional[OriginConfig] = None
     status: RuleStatus = RuleStatus.draft
 
 
@@ -105,6 +114,7 @@ class RuleUpdate(BaseModel):
     group_by: Optional[GroupByConfig] = None
     compute: Optional[ComputeConfig] = None
     backend_config: Optional[BackendConfig] = None
+    origin: Optional[OriginConfig] = None
     status: Optional[RuleStatus] = None
 
 
@@ -116,6 +126,7 @@ class RuleResponse(BaseModel):
     group_by: GroupByConfig
     compute: ComputeConfig
     backend_config: BackendConfig
+    origin: Optional[OriginConfig] = None
     status: RuleStatus
     created_at: datetime
     updated_at: datetime
@@ -130,6 +141,7 @@ class RuleResponse(BaseModel):
             group_by=GroupByConfig(**rule.group_by),
             compute=ComputeConfig(**rule.compute),
             backend_config=BackendConfig(**rule.backend_config),
+            origin=OriginConfig(**rule.origin) if rule.origin else None,
             status=RuleStatus(rule.status),
             created_at=rule.created_at,
             updated_at=rule.updated_at,
