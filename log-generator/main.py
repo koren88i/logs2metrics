@@ -12,8 +12,13 @@ app = FastAPI(title="Log Generator")
 
 ES_HOST = os.getenv("ES_HOST", "http://localhost:9201")
 ES_INDEX = os.getenv("ES_INDEX", "app-logs")
+ES_USER = os.getenv("ES_USER")
+ES_PASS = os.getenv("ES_PASS")
 
-es = Elasticsearch(ES_HOST)
+es_kwargs: dict = {}
+if ES_USER and ES_PASS:
+    es_kwargs["basic_auth"] = (ES_USER, ES_PASS)
+es = Elasticsearch(ES_HOST, **es_kwargs)
 
 # --- Config for realistic log generation ---
 

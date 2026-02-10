@@ -22,7 +22,9 @@
       "Bash(docker exec:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nPhase 3: ES & Kibana read-only connectors\n\nAdd elasticsearch-py and httpx connectors to read index metadata,\nfield mappings, cardinality, and Kibana dashboard/panel definitions.\nSix new REST endpoints under /api/es/ and /api/kibana/ with structured\nPanelAnalysis output for downstream suitability scoring.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(Start-Sleep -Seconds 5)",
-      "Bash(curl.exe:*)"
+      "Bash(curl.exe:*)",
+      "Bash(git commit:*)",
+      "Bash(docker volume rm:*)"
     ]
   }
 }

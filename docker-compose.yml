@@ -66,6 +66,65 @@ services:
       timeout: 5s
       retries: 5
 
+  elasticsearch2:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: l2m-elasticsearch2
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=admin1
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9202:9200"
+    volumes:
+      - es2-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:admin1 http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  es2-setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: l2m-es2-setup
+    depends_on:
+      elasticsearch2:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c", "curl -sf -u elastic:admin1 -X POST http://elasticsearch2:9200/_security/user/kibana_system/_password -H 'Content-Type: application/json' -d '{\"password\":\"admin1\"}'"]
+
+  kibana2:
+    image: docker.elastic.co/kibana/kibana:8.12.0
+    container_name: l2m-kibana2
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch2:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=admin1
+    ports:
+      - "5603:5601"
+    depends_on:
+      es2-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:admin1 http://localhost:5601/api/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  log-generator2:
+    build: ./log-generator
+    container_name: l2m-log-generator2
+    environment:
+      - ES_HOST=http://elasticsearch2:9200
+      - ES_INDEX=app-logs
+      - ES_USER=elastic
+      - ES_PASS=admin1
+    ports:
+      - "8092:8000"
+    depends_on:
+      elasticsearch2:
+        condition: service_healthy
+
 volumes:
   es-data:
+  es2-data:
   api-data:
