@@ -67,6 +67,7 @@ python seed.py --kibana http://localhost:5602
 13. **Proxy endpoints must route by connection**: Portal proxy endpoints (generate, reset, ES search, transforms) were originally hardcoded to the default log-generator/ES. When the user connects to a different Kibana, these must route to the corresponding services. Use `_KIBANA_SERVICE_MAP` in `main.py` to map Kibana URL → log-generator URL + ES URL + auth. The portal's `api()` JS function already injects `X-Kibana-Url` on every call.
 14. **Raw `fetch()` bypasses connection headers**: Any JS code using `fetch()` directly instead of the `api()` wrapper won't include `X-Kibana-Url`/auth headers. Always use `api()` for backend calls. The `api()` helper handles 204 No Content responses (returns `null`).
 15. **`innerHTML +=` in a loop destroys DOM references**: Building a list of cards with `container.innerHTML += card` inside a loop serializes/re-parses the entire DOM on each iteration, invalidating any previously captured element references (e.g. from `getElementById`). Always build the full HTML string first, then assign once with `container.innerHTML = allCards`, and only then interact with child elements.
+16. **Kibana data view creation via REST API is fragile**: `POST /api/data_views/data_view` silently returns 400 when the underlying ES index doesn't exist, and `allowNoIndex: true` doesn't always help. The NDJSON import API then fails with `missing_references` because the data view was never created. Fix: include the data view as an `index-pattern` type saved object directly in the NDJSON import batch — references are resolved within the batch atomically.
 
 ### Phase 4: Suitability Scoring + Candidate Analysis [DONE]
 
@@ -188,6 +189,33 @@ python seed.py --kibana http://localhost:5602
 - **Fixed Rules Manager status display for all but last rule**: `container.innerHTML +=` inside the rule rendering loop destroyed and recreated all previous DOM elements on each iteration. `mgrPollStatus()` grabbed a reference to `mgrStatus{id}`, then the next `innerHTML +=` nuked it — status responses wrote to detached nodes. Only the last rule survived. Fix: build all card HTML first, assign once with a single `innerHTML =`, then start polling.
 - **Fixed dashboard selector not updating Step 3 panels**: `onDashboardChange()` only updated `state.dashboardId` but never called `loadPanels()`. Changing the dashboard dropdown now reloads panels in Step 3 if already unlocked.
 - **Fixed Kibana 401 on metrics dashboard creation**: `_KIBANA_SERVICE_MAP` had `es_auth` for kibana2 but no `kibana_auth`. When users connected to a security-enabled Kibana without entering credentials, write operations (saved_objects import) returned 401. Fix: added `kibana_auth` to the service map and auto-fill credentials in `get_kibana_conn` for known Kibana instances (mirrors how `_get_es_client` already works for ES auth).
+
+### Status Refresh + Shared Polling [DONE]
+
+- **Refresh button on all status displays**: Both Pipeline Step 4 and Rules Manager now show a "Refresh" button next to health/processed/indexed stats. Clicking it fetches live transform stats from ES on demand — numbers update when new data arrives and the transform processes it.
+- **Shared status functions**: Refactored duplicated status logic into three shared functions used everywhere:
+  - `renderStatus(statusEl, st, ruleId)` — renders health/processed/indexed + refresh button
+  - `refreshStatus(ruleId)` — fetches live stats and re-renders (auto-finds the right DOM element for Pipeline or Rules Manager)
+  - `pollStatus(ruleId, statusElId, opts)` — configurable polling loop with stop condition, callbacks, and cleanup handle storage
+- Previously, status numbers were a one-time snapshot taken shortly after rule creation and never updated.
+
+### Configurable Transform Frequency [DONE]
+
+- **`frequency` field on `GroupByConfig`**: Optional transform check interval (e.g. `1m`, `5m`, `15m`, `1h`). Defaults to `null` which means auto = `max(time_bucket, 1m)`.
+- **Pipeline Step 3**: New "Frequency" dropdown next to "Bucket" dropdown, with options: auto, 1m, 5m, 15m, 1h
+- **Rules Manager**: Frequency shown in card metadata, editable in the inline edit form
+- **Backend**: `elastic_backend.py` uses explicit frequency if set, otherwise falls back to auto logic
+- **Labeled dropdowns**: All three Step 3 dropdowns now have labels: "Lookback", "Bucket", "Frequency"
+
+### Data View NDJSON Fix [DONE]
+
+- **Fixed "Add Panel" failing for some rules**: `_create_data_view()` via REST API silently failed (400 swallowed) when the metrics index didn't exist yet, causing the subsequent NDJSON import to fail with `missing_references`. Fix: include the data view as an `index-pattern` saved object directly in the NDJSON import batch alongside the visualization and dashboard. The import resolves references within the batch atomically.
+
+### Dev Workflow: Full Bind-Mount + Auto-Reload [DONE]
+
+- **Bind-mount entire `api/` directory**: `docker-compose.yml` now mounts `./api:/app` instead of just `debug_ui.html`. All Python files, HTML, everything updates live without rebuilding.
+- **Uvicorn `--reload`**: Dockerfile CMD now includes `--reload` so uvicorn watches for file changes and auto-restarts the server.
+- After one final `docker compose up -d --build api`, no more rebuilds needed for any `api/` code changes.
 
 ---
 

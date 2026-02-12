@@ -46,6 +46,11 @@ class GroupByConfig(BaseModel):
         max_length=10,
         examples=[["service", "endpoint"]],
     )
+    frequency: Optional[str] = Field(
+        default=None,
+        description="Transform check interval (e.g. '1m', '5m', '15m'). Defaults to max(time_bucket, 1m) if not set.",
+        examples=["1m", "5m", "15m", "1h"],
+    )
 
 
 class ComputeConfig(BaseModel):

@@ -231,8 +231,10 @@ Step 3: Analyze Panels + Create Rules
   └── Per-panel actions:
        ├── "Preview Agg" — runs the panel's ES aggregation inline (date_histogram + terms + metric)
        │    Shows query, matching docs, buckets with data, results table
+       ├── Lookback selector (1h / 6h / 1d / 7d / 30d / 90d / 1y) — for Analyze scoring
        ├── "Analyze" — runs suitability scoring (0-95) with per-signal breakdown bars
-       ├── Time bucket selector (10s / 1m / 5m / 10m / 1h)
+       ├── Bucket selector (10s / 1m / 5m / 10m / 1h) — metric aggregation granularity
+       ├── Frequency selector (auto / 1m / 5m / 15m / 1h) — how often transform checks for new data
        ├── Skip guardrails checkbox
        └── "Create Rule" — auto-constructs RuleCreate from panel, POSTs to /api/rules
             Infers compute type from panel metrics (count/avg/sum/distribution)
@@ -242,7 +244,7 @@ Step 4: Created Rules + Transforms
   └── Shows provisioned rules with live polling:
        ├── Transform ID + metrics index name
        ├── Rule body JSON
-       ├── Health status (polls every 2s until green + checkpointed)
+       ├── Health status (polls every 2s until green + checkpointed) + Refresh button
        └── Transform definition + stats on ready
 
 Step 5: Side-by-Side Comparison
@@ -322,6 +324,7 @@ LogMetricRule
   group_by:
     time_bucket: string         # e.g. "1m", "5m"
     dimensions: string[]        # e.g. ["service", "endpoint"]
+    frequency: string?          # transform check interval, e.g. "1m", "5m", "15m"; defaults to max(time_bucket, 1m)
   compute:
     type: count|sum|avg|distribution
     field: string?              # required for sum/avg/distribution

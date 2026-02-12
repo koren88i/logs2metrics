@@ -355,11 +355,14 @@ class ElasticMetricsBackend(MetricsBackend):
             }
         }
 
-        # Frequency: at least 1m
-        frequency = group_by_cfg.time_bucket
-        bucket_seconds = _parse_time_bucket_seconds(group_by_cfg.time_bucket)
-        if bucket_seconds < 60:
-            frequency = "1m"
+        # Frequency: use explicit value if set, otherwise default to max(bucket, 1m)
+        if group_by_cfg.frequency:
+            frequency = group_by_cfg.frequency
+        else:
+            frequency = group_by_cfg.time_bucket
+            bucket_seconds = _parse_time_bucket_seconds(group_by_cfg.time_bucket)
+            if bucket_seconds < 60:
+                frequency = "1m"
 
         return {
             "source": source_block,

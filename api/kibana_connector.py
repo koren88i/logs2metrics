@@ -369,8 +369,16 @@ def add_rule_panel_to_dashboard(
     vis_id = f"{METRICS_VIS_PREFIX}{rule_id}"
     index_pattern = f"l2m-metrics-rule-{rule_id}"
 
-    # 3. Create data view for metrics index
-    _create_data_view(dv_id, index_pattern, time_field, f"Metrics: {rule_name}", conn=conn)
+    # 3. Build data view saved object (included in NDJSON import to avoid reference issues)
+    dv_obj = {
+        "id": dv_id,
+        "type": "index-pattern",
+        "attributes": {
+            "title": index_pattern,
+            "timeFieldName": time_field,
+            "name": f"Metrics: {rule_name}",
+        },
+    }
 
     # 4. Resolve the original visualization ID from the origin dashboard
     origin_vis_id = _resolve_panel_vis_id(origin_dashboard_id, origin_panel_id, conn=conn)
@@ -412,8 +420,8 @@ def add_rule_panel_to_dashboard(
         "references": updated_refs,
     }
 
-    # 8. Import visualization + updated dashboard
-    return _import_saved_objects([vis_obj, dashboard_obj], conn=conn)
+    # 8. Import data view + visualization + updated dashboard
+    return _import_saved_objects([dv_obj, vis_obj, dashboard_obj], conn=conn)
 
 
 # ── Write helpers ────────────────────────────────────────────────────
@@ -477,6 +485,7 @@ def _create_data_view(
             "title": index_pattern,
             "timeFieldName": time_field,
             "name": name,
+            "allowNoIndex": True,
         }
     }
     response = client.post(

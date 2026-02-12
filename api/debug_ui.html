@@ -527,15 +527,22 @@ async function loadPanels() {
             </div>
             <div class="panel-card-actions">
               <button class="secondary" onclick="previewPanelAgg(${idx})" ${isRawDocs ? 'disabled' : ''}>Preview Agg</button>
-              <select id="lookback${idx}">${LOOKBACK_OPTIONS}</select>
+              <label style="font-size:0.75rem;color:#8b949e">Lookback<select id="lookback${idx}" style="margin-left:3px">${LOOKBACK_OPTIONS}</select></label>
               <button onclick="analyzePanel(${idx})">Analyze</button>
-              <select id="timeBucket${idx}">
+              <label style="font-size:0.75rem;color:#8b949e">Bucket<select id="timeBucket${idx}" style="margin-left:3px">
                 <option value="10s">10s</option>
                 <option value="1m" selected>1m</option>
                 <option value="5m">5m</option>
                 <option value="10m">10m</option>
                 <option value="1h">1h</option>
-              </select>
+              </select></label>
+              <label style="font-size:0.75rem;color:#8b949e">Frequency<select id="frequency${idx}" style="margin-left:3px">
+                <option value="" selected>auto</option>
+                <option value="1m">1m</option>
+                <option value="5m">5m</option>
+                <option value="15m">15m</option>
+                <option value="1h">1h</option>
+              </select></label>
               <label style="font-size:0.75rem;display:flex;align-items:center;gap:3px;cursor:pointer"><input type="checkbox" id="skipGuardrails${idx}"> Skip guardrails</label>
               <button class="secondary" onclick="createRuleFromPanel(${idx})" ${isRawDocs ? 'disabled title="Cannot create rule from raw docs panel"' : ''}>Create Rule</button>
             </div>
@@ -705,7 +712,14 @@ async function createRuleFromPanel(idx) {
     : null;
 
   const timeBucket = document.getElementById('timeBucket' + idx).value;
+  const frequency = document.getElementById('frequency' + idx).value || null;
   const skipGuardrails = document.getElementById('skipGuardrails' + idx).checked;
+
+  const groupBy = {
+    time_bucket: timeBucket,
+    dimensions: panel.group_by_fields || [],
+  };
+  if (frequency) groupBy.frequency = frequency;
 
   const ruleBody = {
     name: panel.title || `Rule from ${panel.panel_id}`,
@@ -715,10 +729,7 @@ async function createRuleFromPanel(idx) {
       time_field: panel.time_field || 'timestamp',
       filter_query: filterQuery,
     },
-    group_by: {
-      time_bucket: timeBucket,
-      dimensions: panel.group_by_fields || [],
-    },
+    group_by: groupBy,
     compute: compute,
     origin: {
       dashboard_id: state.dashboardId,
@@ -797,67 +808,49 @@ function addRuleCard(entry) {
 }
 
 function startPolling(entry) {
-  let attempts = 0;
-  const interval = setInterval(async () => {
-    attempts++;
-    try {
-      const status = await api('GET', `/api/rules/${entry.id}/status`);
-      const statusEl = document.getElementById('ruleStatus' + entry.id);
-      if (status.health === 'green' && status.last_checkpoint) {
-        clearInterval(interval);
-        delete state.pollIntervals[entry.id];
-        entry.ready = true;
-
-        statusEl.innerHTML = `
-          <span class="stat">Health: <b style="color:#3fb950">${status.health}</b></span>
-          <span class="stat">Processed: <b>${status.docs_processed.toLocaleString()}</b></span>
-          <span class="stat">Indexed: <b>${status.docs_indexed.toLocaleString()}</b></span>
-        `;
-
-        const card = document.getElementById('ruleCard' + entry.id);
-        if (card) card.classList.add('ready');
-
-        // Get transform definition
-        try {
-          const transform = await api('GET', `/api/transforms/${entry.transformId}`);
-          const detailEl = document.getElementById('ruleDetail' + entry.id);
-          detailEl.innerHTML += `
-            <div class="panel" style="margin-top:0.5rem">
-              <div class="panel-label">ES Transform Definition</div>
-              <pre>${syntaxHL(transform.transforms ? transform.transforms[0] : transform)}</pre>
-            </div>
-            <div class="panel" style="margin-top:0.5rem">
-              <div class="panel-label">Transform Status</div>
-              <pre>${syntaxHL(status)}</pre>
-            </div>
-          `;
-        } catch(e) {}
-
-        // Check if we should unlock step 5
-        if (state.rules.some(r => r.ready)) {
-          markDone(4);
-          unlockStep(5);
-          updateRuleSelector();
-          setStatus('Transform(s) ready. Run side-by-side comparison in Step 5.');
-        }
-      } else {
-        const statusEl = document.getElementById('ruleStatus' + entry.id);
-        if (statusEl) statusEl.innerHTML = loading(`Waiting... (${attempts * 2}s)`);
-      }
-    } catch(e) {}
-    if (attempts > 30) {
-      clearInterval(interval);
+  pollStatus(entry.id, 'ruleStatus' + entry.id, {
+    interval: 2000,
+    maxAttempts: 30,
+    stopWhen: st => st.health === 'green' && st.last_checkpoint,
+    store: handle => { state.pollIntervals[entry.id] = handle; },
+    onReady: async (st) => {
       delete state.pollIntervals[entry.id];
-      const statusEl = document.getElementById('ruleStatus' + entry.id);
-      if (statusEl) statusEl.innerHTML = '<span style="color:#d29922">Timed out. Transform may still be starting.</span>';
+      entry.ready = true;
+
+      const card = document.getElementById('ruleCard' + entry.id);
+      if (card) card.classList.add('ready');
+
+      // Get transform definition
+      try {
+        const transform = await api('GET', `/api/transforms/${entry.transformId}`);
+        const detailEl = document.getElementById('ruleDetail' + entry.id);
+        detailEl.innerHTML += `
+          <div class="panel" style="margin-top:0.5rem">
+            <div class="panel-label">ES Transform Definition</div>
+            <pre>${syntaxHL(transform.transforms ? transform.transforms[0] : transform)}</pre>
+          </div>
+          <div class="panel" style="margin-top:0.5rem">
+            <div class="panel-label">Transform Status</div>
+            <pre>${syntaxHL(st)}</pre>
+          </div>
+        `;
+      } catch(e) {}
+
+      if (state.rules.some(r => r.ready)) {
+        markDone(4); unlockStep(5);
+        updateRuleSelector();
+        setStatus('Transform(s) ready. Run side-by-side comparison in Step 5.');
+      }
+    },
+    onTimeout: () => {
+      delete state.pollIntervals[entry.id];
       entry.ready = true; // allow comparison attempt anyway
       if (state.rules.some(r => r.ready)) {
         markDone(4); unlockStep(5);
         updateRuleSelector();
       }
     }
-  }, 2000);
-  state.pollIntervals[entry.id] = interval;
+  });
 }
 
 // ── Step 5: Side-by-Side Comparison ──────────────────────────────
@@ -1103,6 +1096,7 @@ async function loadAllRules() {
               <div class="mgr-rule-meta">
                 <span>Compute: <b>${computeDesc}</b></span>
                 <span>Bucket: <b>${rule.group_by.time_bucket}</b></span>
+                <span>Frequency: <b>${rule.group_by.frequency || 'auto'}</b></span>
                 <span>Dims: <b>${dims}</b></span><br>
                 <span>Source: <b>${rule.source.index_pattern}</b></span>
                 <span>Filter: <b>${filter}</b></span>
@@ -1126,45 +1120,69 @@ async function loadAllRules() {
     // Now poll statuses — DOM elements won't be destroyed
     for (const rule of rules) {
       if (rule.status === 'active') {
-        mgrPollStatus(rule.id);
+        pollStatus(rule.id, 'mgrStatus' + rule.id, {
+          interval: 2000,
+          maxAttempts: 30,
+          stopWhen: st => st.health !== 'yellow', // stop once no longer transitioning
+          store: handle => { state.mgrPollIntervals[rule.id] = handle; },
+        });
       } else if (rule.status === 'error') {
-        const statusEl = document.getElementById('mgrStatus' + rule.id);
-        try {
-          const st = await api('GET', `/api/rules/${rule.id}/status`);
-          statusEl.innerHTML = `<span class="stat">Health: <b style="color:#f85149">${st.health}</b></span>${st.error ? `<span class="stat" style="color:#f85149">${st.error}</span>` : ''}`;
-        } catch(e) {
-          statusEl.innerHTML = '<span style="color:#f85149;font-size:0.8rem">Could not fetch status</span>';
-        }
+        // Single fetch for error rules
+        refreshStatus(rule.id);
       }
     }
   } catch(e) { container.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
 }
 
-function mgrShowStatus(statusEl, st) {
+// ── Shared status display ────────────────────────────────────────
+
+function renderStatus(statusEl, st, ruleId) {
   const colorMap = { green: '#3fb950', yellow: '#d29922', red: '#f85149', stopped: '#8b949e', unknown: '#f85149' };
   const color = colorMap[st.health] || '#8b949e';
   let html = `<span class="stat">Health: <b style="color:${color}">${st.health}</b></span>`;
   if (st.docs_processed != null) html += `<span class="stat">Processed: <b>${st.docs_processed.toLocaleString()}</b></span>`;
   if (st.docs_indexed != null) html += `<span class="stat">Indexed: <b>${st.docs_indexed.toLocaleString()}</b></span>`;
   if (st.error) html += `<span class="stat" style="color:#f85149">${st.error}</span>`;
+  if (ruleId != null) html += ` <button class="secondary" onclick="refreshStatus(${ruleId})" style="padding:0.2rem 0.5rem;font-size:0.75rem">Refresh</button>`;
   statusEl.innerHTML = html;
 }
 
-function mgrPollStatus(ruleId) {
-  const statusEl = document.getElementById('mgrStatus' + ruleId);
+async function refreshStatus(ruleId) {
+  // Find the status element — works for both Pipeline (ruleStatus{id}) and Rules Manager (mgrStatus{id})
+  const statusEl = document.getElementById('mgrStatus' + ruleId) || document.getElementById('ruleStatus' + ruleId);
+  if (!statusEl) return;
+  statusEl.innerHTML = loading('Refreshing...');
+  try {
+    const st = await api('GET', `/api/rules/${ruleId}/status`);
+    renderStatus(statusEl, st, ruleId);
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:#8b949e;font-size:0.8rem">Could not fetch status</span>`;
+  }
+}
+
+function pollStatus(ruleId, statusElId, opts) {
+  // Shared polling logic for both Pipeline Step 4 and Rules Manager.
+  // opts: { interval (ms), maxAttempts, stopWhen(st)->bool, onReady(st)->void, onTimeout()->void }
+  const statusEl = document.getElementById(statusElId);
   if (!statusEl) return;
   statusEl.innerHTML = loading('Checking...');
 
-  // Single fetch — show whatever we get. Only poll further if yellow (transitioning).
   let attempts = 0;
   const poll = async () => {
     attempts++;
     try {
       const st = await api('GET', `/api/rules/${ruleId}/status`);
-      mgrShowStatus(statusEl, st);
-      // Only keep polling if transform is in a transitional state
-      if (st.health === 'yellow' && attempts < 30) {
-        state.mgrPollIntervals[ruleId] = setTimeout(poll, 2000);
+      renderStatus(statusEl, st, ruleId);
+      if (opts.stopWhen && opts.stopWhen(st)) {
+        if (opts.onReady) opts.onReady(st);
+        return; // done
+      }
+      if (attempts < (opts.maxAttempts || 30)) {
+        const handle = setTimeout(poll, opts.interval || 2000);
+        // Store handle for cleanup
+        if (opts.store) opts.store(handle);
+      } else {
+        if (opts.onTimeout) opts.onTimeout();
       }
     } catch(e) {
       statusEl.innerHTML = `<span style="color:#8b949e;font-size:0.8rem">No backend status available</span>`;
@@ -1332,6 +1350,8 @@ async function mgrEditRule(ruleId) {
     const rule = await api('GET', `/api/rules/${ruleId}`);
     const computeTypes = ['count', 'sum', 'avg', 'distribution'];
     const timeBuckets = ['10s', '1m', '5m', '10m', '1h'];
+    const frequencies = ['', '1m', '5m', '15m', '1h'];
+    const curFreq = rule.group_by.frequency || '';
 
     expandEl.innerHTML = `
       <div class="edit-form">
@@ -1340,6 +1360,10 @@ async function mgrEditRule(ruleId) {
         <label>Time bucket</label>
         <select id="editBucket${ruleId}">
           ${timeBuckets.map(b => `<option value="${b}" ${b === rule.group_by.time_bucket ? 'selected' : ''}>${b}</option>`).join('')}
+        </select>
+        <label>Frequency</label>
+        <select id="editFreq${ruleId}">
+          ${frequencies.map(f => `<option value="${f}" ${f === curFreq ? 'selected' : ''}>${f || 'auto'}</option>`).join('')}
         </select>
         <label>Dimensions</label>
         <input type="text" id="editDims${ruleId}" value="${(rule.group_by.dimensions || []).join(', ')}" placeholder="comma-separated fields">
@@ -1379,6 +1403,7 @@ function mgrCancelEdit(ruleId) {
 async function mgrSaveEdit(ruleId, originalStatus) {
   const name = document.getElementById('editName' + ruleId).value.trim();
   const timeBucket = document.getElementById('editBucket' + ruleId).value;
+  const frequency = document.getElementById('editFreq' + ruleId).value || null;
   const dimsRaw = document.getElementById('editDims' + ruleId).value;
   const dims = dimsRaw ? dimsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
   const computeType = document.getElementById('editCompute' + ruleId).value;
@@ -1390,6 +1415,9 @@ async function mgrSaveEdit(ruleId, originalStatus) {
   const compute = { type: computeType };
   if (computeType !== 'count') compute.field = computeField;
   if (computeType === 'distribution') compute.percentiles = [50, 75, 90, 95, 99];
+
+  const groupBy = { time_bucket: timeBucket, dimensions: dims };
+  if (frequency) groupBy.frequency = frequency;
 
   const expandEl = document.getElementById('mgrExpand' + ruleId);
   expandEl.innerHTML = loading('Saving...');
@@ -1403,7 +1431,7 @@ async function mgrSaveEdit(ruleId, originalStatus) {
     // Save the updated config
     await api('PUT', `/api/rules/${ruleId}`, {
       name: name,
-      group_by: { time_bucket: timeBucket, dimensions: dims },
+      group_by: groupBy,
       compute: compute
     });
 
@@ -1428,7 +1456,7 @@ async function cleanup() {
   try {
     // Stop all polling (pipeline + manager)
     for (const id of Object.keys(state.pollIntervals)) {
-      clearInterval(state.pollIntervals[id]);
+      clearTimeout(state.pollIntervals[id]);
     }
     for (const id of Object.keys(state.mgrPollIntervals)) {
       clearTimeout(state.mgrPollIntervals[id]);
