@@ -68,6 +68,7 @@ python seed.py --kibana http://localhost:5602
 14. **Raw `fetch()` bypasses connection headers**: Any JS code using `fetch()` directly instead of the `api()` wrapper won't include `X-Kibana-Url`/auth headers. Always use `api()` for backend calls. The `api()` helper handles 204 No Content responses (returns `null`).
 15. **`innerHTML +=` in a loop destroys DOM references**: Building a list of cards with `container.innerHTML += card` inside a loop serializes/re-parses the entire DOM on each iteration, invalidating any previously captured element references (e.g. from `getElementById`). Always build the full HTML string first, then assign once with `container.innerHTML = allCards`, and only then interact with child elements.
 16. **Kibana data view creation via REST API is fragile**: `POST /api/data_views/data_view` silently returns 400 when the underlying ES index doesn't exist, and `allowNoIndex: true` doesn't always help. The NDJSON import API then fails with `missing_references` because the data view was never created. Fix: include the data view as an `index-pattern` type saved object directly in the NDJSON import batch — references are resolved within the batch atomically.
+17. **`doc_count` is a reserved ES field name**: Elasticsearch treats a field named `doc_count` as `_doc_count_field_name` metadata — it controls the document count returned by aggregations rather than being a regular field. A `sum(doc_count)` aggregation returns the number of documents in the bucket (1), not the stored value (e.g. 6). Always use a different name like `event_count` for pre-computed count fields.
 
 ### Phase 4: Suitability Scoring + Candidate Analysis [DONE]
 
@@ -161,7 +162,7 @@ python seed.py --kibana http://localhost:5602
 - **Create Metrics Dashboard from Rules**: Two-step flow in the Rules Manager tab to visualize pre-computed metrics in Kibana
   - "Create Metrics Dashboard" section at top of Rules Manager — enter a name, click Create to provision an empty Kibana dashboard
   - Per-rule "Add Panel" button on active rules — clones the original visualization and rewires it to read from the metrics index
-  - **Visualization cloning**: Fetches the original Kibana visualization saved object (from the rule's `origin.panel_id`), deep-copies its structure (chart type, axes, legend, colors, date_histogram + terms aggs), and rewires the metric agg to read pre-computed fields (`doc_count`, `sum_{field}`, `avg_{field}`, `pct_{field}`)
+  - **Visualization cloning**: Fetches the original Kibana visualization saved object (from the rule's `origin.panel_id`), deep-copies its structure (chart type, axes, legend, colors, date_histogram + terms aggs), and rewires the metric agg to read pre-computed fields (`event_count`, `sum_{field}`, `avg_{field}`, `pct_{field}`)
   - Creates per-rule Kibana data views pointing at `l2m-metrics-rule-{id}` indices
   - Fixed dashboard ID (`l2m-metrics-dashboard`) for one-at-a-time semantics
   - "View in Kibana" link with Docker-internal → browser URL mapping (`http://kibana:5601` → `http://localhost:5602`)
@@ -216,6 +217,13 @@ python seed.py --kibana http://localhost:5602
 - **Bind-mount entire `api/` directory**: `docker-compose.yml` now mounts `./api:/app` instead of just `debug_ui.html`. All Python files, HTML, everything updates live without rebuilding.
 - **Uvicorn `--reload`**: Dockerfile CMD now includes `--reload` so uvicorn watches for file changes and auto-restarts the server.
 - After one final `docker compose up -d --build api`, no more rebuilds needed for any `api/` code changes.
+
+### Count Mismatch Fix + Metrics Dashboard Management [DONE]
+
+- **Fixed count mismatch between original and metrics dashboards**: The count transform aggregation field was named `doc_count`, which is a reserved field name in Elasticsearch (`_doc_count_field_name` metadata). Kibana's `sum(doc_count)` returned 1 (number of metrics documents) instead of the actual stored count (e.g. 6). Renamed to `event_count` across 4 files: `elastic_backend.py` (transform agg + index mapping), `kibana_connector.py` (`_METRIC_AGG_MAP` + fallback), `debug_ui.html` (comparison metric field).
+- **Panel removal from metrics dashboard**: New `DELETE /api/metrics-dashboard/panels/{rule_id}` endpoint + `remove_rule_panel_from_dashboard()` in `kibana_connector.py`. Removes the panel from the dashboard's `panelsJSON`, deletes the visualization and data view saved objects. "Remove Panel" button added to active rule cards in the Rules Manager.
+- **Metrics dashboard deletion**: New `DELETE /api/metrics-dashboard` endpoint that nukes the entire metrics dashboard and all associated visualizations and data views. "Delete Dashboard" button in the Metrics Dashboard section of the Rules Manager. Handles orphaned panels (rules deleted before panels were removed).
+- **`_delete_saved_object()` helper** in `kibana_connector.py`: Generic DELETE for Kibana saved objects by type and ID. Used by both panel removal and dashboard deletion.
 
 ---
 

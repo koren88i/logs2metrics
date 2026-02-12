@@ -57,7 +57,7 @@ A platform service that derives metrics from existing Elasticsearch logs, driven
 - FastAPI + SQLModel + SQLite
 - `LogMetricRule` CRUD at `/api/rules`
 - ES connector (`es_connector.py`) — index metadata, mappings, cardinality, stats via `elasticsearch-py`
-- Kibana connector (`kibana_connector.py`) — dashboard listing, panel parsing, metrics dashboard creation + visualization cloning via `httpx`; supports per-request URL + basic auth override via `KibanaConnection` dataclass
+- Kibana connector (`kibana_connector.py`) — dashboard listing, panel parsing, metrics dashboard CRUD + visualization cloning via `httpx`; supports per-request URL + basic auth override via `KibanaConnection` dataclass
 - Connector response models (`connector_models.py`) — IndexInfo, IndexMapping, FieldCardinality, IndexStats, DashboardSummary, PanelAnalysis, DashboardDetail
 - Database (`database.py`) — SQLite engine + session + auto-migration for new columns
 - Config (`config.py`) — ES_URL / KIBANA_URL from environment variables
@@ -176,6 +176,8 @@ All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-
 | POST | `/api/metrics-dashboard` | Create empty Kibana metrics dashboard (body: `{title}`) |
 | GET | `/api/metrics-dashboard` | Get dashboard info: id, title, panel count, panels (404 if none) |
 | POST | `/api/metrics-dashboard/panels/{rule_id}` | Add rule as cloned visualization panel (409 if already added) |
+| DELETE | `/api/metrics-dashboard/panels/{rule_id}` | Remove panel from dashboard + delete visualization & data view |
+| DELETE | `/api/metrics-dashboard` | Delete entire metrics dashboard + all associated visualizations & data views |
 
 ### Server Config
 | Method | Path | Description |
@@ -276,12 +278,14 @@ Per-rule card:
 Compare: expands inline with side-by-side log agg vs metrics (reuses runComparison)
 Edit: inline form (name, time bucket, dimensions, compute); deprovisions→saves→re-provisions active rules
 Add Panel: adds rule's cloned visualization to the metrics dashboard (shown only for active rules; disabled after adding)
+Remove Panel: removes rule's panel from the metrics dashboard + deletes visualization & data view saved objects
 Activate/Pause: status transitions via PUT /api/rules/{id}
 Delete: confirms, then DELETE /api/rules/{id} (API handles deprovision)
 
 Metrics Dashboard section (above rule list):
   ├── If no dashboard: name input + "Create Dashboard" button
-  └── If dashboard exists: title, panel count, "View in Kibana" link
+  └── If dashboard exists: title, panel count, "View in Kibana" link, "Delete Dashboard" button
+       Delete Dashboard: removes entire metrics dashboard + all associated visualizations & data views (handles orphaned panels)
 ```
 
 ### Key Behaviors
@@ -293,7 +297,7 @@ Metrics Dashboard section (above rule list):
 - **Zero-match handling (Pipeline tab)**: Transforms that match zero documents (e.g. error filter with all-200 data) are considered ready once they reach `health: green` with a completed checkpoint, regardless of `docs_processed`.
 - **Cleanup**: Button at the end of Pipeline deletes all session rules + transforms + metrics indices and resets the UI.
 - **Rules Manager persistence**: Shows all rules from the database regardless of which session created them.
-- **Metrics Dashboard**: One dashboard at a time (fixed ID `l2m-metrics-dashboard`). Panels are cloned from original visualizations — preserves chart type, axes, legend, colors, date_histogram + terms aggs. Only the metric agg is rewired to read pre-computed fields from `l2m-metrics-rule-{id}` indices. Each rule gets its own Kibana data view.
+- **Metrics Dashboard**: One dashboard at a time (fixed ID `l2m-metrics-dashboard`). Panels are cloned from original visualizations — preserves chart type, axes, legend, colors, date_histogram + terms aggs. Only the metric agg is rewired to read pre-computed fields (`event_count`, `sum_{field}`, `avg_{field}`, `pct_{field}`) from `l2m-metrics-rule-{id}` indices. Each rule gets its own Kibana data view. Panels can be removed individually or the entire dashboard can be deleted (cleans up all associated saved objects).
 
 ---
 
