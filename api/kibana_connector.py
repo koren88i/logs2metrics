@@ -297,7 +297,7 @@ METRICS_DV_PREFIX = "l2m-metrics-dv-rule-"
 
 # Metric agg mapping: compute_type -> (agg_type, field_name_template)
 _METRIC_AGG_MAP = {
-    "count": ("sum", "doc_count"),
+    "count": ("sum", "event_count"),
     "sum": ("sum", "sum_{field}"),
     "avg": ("avg", "avg_{field}"),
     "distribution": ("avg", "pct_{field}"),
@@ -424,6 +424,47 @@ def add_rule_panel_to_dashboard(
     return _import_saved_objects([dv_obj, vis_obj, dashboard_obj], conn=conn)
 
 
+def remove_rule_panel_from_dashboard(
+    rule_id: int,
+    conn: KibanaConnection | None = None,
+) -> dict:
+    """Remove a rule's panel from the metrics dashboard.
+
+    Strips the panel from panelsJSON, removes the reference, and re-imports
+    the dashboard. Also deletes the visualization and data view saved objects.
+    """
+    dashboard = get_dashboard(METRICS_DASHBOARD_ID, conn=conn)
+    attrs = dashboard["attributes"]
+    existing_panels = json.loads(attrs.get("panelsJSON", "[]"))
+    existing_refs = dashboard.get("references", [])
+
+    panel_index = f"p_rule_{rule_id}"
+    ref_name = f"panel_{panel_index}"
+
+    updated_panels = [p for p in existing_panels if p.get("panelIndex") != panel_index]
+    updated_refs = [r for r in existing_refs if r.get("name") != ref_name]
+
+    # Re-import updated dashboard
+    dashboard_obj = {
+        "id": METRICS_DASHBOARD_ID,
+        "type": "dashboard",
+        "attributes": {
+            **attrs,
+            "panelsJSON": json.dumps(updated_panels),
+        },
+        "references": updated_refs,
+    }
+    result = _import_saved_objects([dashboard_obj], conn=conn)
+
+    # Best-effort cleanup of the visualization and data view saved objects
+    vis_id = f"{METRICS_VIS_PREFIX}{rule_id}"
+    dv_id = f"{METRICS_DV_PREFIX}{rule_id}"
+    _delete_saved_object("visualization", vis_id, conn=conn)
+    _delete_saved_object("index-pattern", dv_id, conn=conn)
+
+    return result
+
+
 # ── Write helpers ────────────────────────────────────────────────────
 
 
@@ -468,6 +509,18 @@ def _import_saved_objects(
     )
     response.raise_for_status()
     return response.json()
+
+
+def _delete_saved_object(
+    obj_type: str,
+    obj_id: str,
+    conn: KibanaConnection | None = None,
+) -> None:
+    """Delete a Kibana saved object. Ignores 404 (already gone)."""
+    client, base_url = _get_client_and_url(conn)
+    response = client.delete(f"{base_url}/api/saved_objects/{obj_type}/{obj_id}")
+    if response.status_code not in (200, 404):
+        log.warning("Failed to delete %s/%s: %s", obj_type, obj_id, response.status_code)
 
 
 def _create_data_view(
@@ -531,7 +584,7 @@ def _clone_and_rewire_visualization(
     aggs = vis_state.get("aggs", [])
 
     # Replace metric aggs
-    agg_type, field_template = _METRIC_AGG_MAP.get(compute_type, ("sum", "doc_count"))
+    agg_type, field_template = _METRIC_AGG_MAP.get(compute_type, ("sum", "event_count"))
     metric_field = field_template.replace("{field}", compute_field or "")
 
     for agg in aggs:

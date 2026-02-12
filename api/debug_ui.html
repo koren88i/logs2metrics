@@ -893,11 +893,11 @@ async function runComparison(ruleInfo, outputEl) {
 
   // Derive the metric value field name (must match elastic_backend.py _build_aggregations)
   let metricField, metricLabel;
-  if (compute.type === 'count') { metricField = 'doc_count'; metricLabel = 'Count'; }
+  if (compute.type === 'count') { metricField = 'event_count'; metricLabel = 'Count'; }
   else if (compute.type === 'sum') { metricField = `sum_${compute.field}`; metricLabel = `Sum(${compute.field})`; }
   else if (compute.type === 'avg') { metricField = `avg_${compute.field}`; metricLabel = `Avg(${compute.field})`; }
   else if (compute.type === 'distribution') { metricField = `pct_${compute.field}`; metricLabel = `Pct(${compute.field})`; }
-  else { metricField = 'doc_count'; metricLabel = 'Value'; }
+  else { metricField = 'event_count'; metricLabel = 'Value'; }
 
   const logAggMetric = {};
   if (compute.type === 'avg') logAggMetric.metric_val = { avg: { field: compute.field } };
@@ -1078,7 +1078,7 @@ async function loadAllRules() {
         const panelExists = state.metricsDashboard
           && (state.metricsDashboard.panels || []).some(p => p.panelIndex === `p_rule_${rule.id}`);
         if (panelExists) {
-          actions += `<button class="secondary" disabled style="color:#3fb950">Added</button>`;
+          actions += `<button class="danger" onclick="mgrRemovePanel(${rule.id})" style="padding:0.35rem 0.75rem;font-size:0.8rem">Remove Panel</button>`;
         } else {
           actions += `<button class="secondary" onclick="mgrAddPanel(${rule.id})">Add Panel</button>`;
         }
@@ -1287,6 +1287,7 @@ function renderMetricsDashboardInfo() {
         <a href="${viewUrl}" target="_blank"
            style="color:#58a6ff;margin-left:0.75rem;font-size:0.85rem">View in Kibana &rarr;</a>
       </div>
+      <button class="danger" onclick="deleteMetricsDashboard()" style="padding:0.35rem 0.75rem;font-size:0.8rem">Delete Dashboard</button>
     </div>
   `;
 }
@@ -1305,6 +1306,23 @@ async function createMetricsDashboard() {
   } catch(e) {
     el.innerHTML = `<div style="color:#f85149">Error: ${e.message}</div>`;
     setTimeout(renderMetricsDashboardCreateForm, 3000);
+  }
+}
+
+async function deleteMetricsDashboard() {
+  if (!confirm('Delete the metrics dashboard and all its panels from Kibana?')) return;
+  const el = document.getElementById('metricsDashboardContent');
+  el.innerHTML = loading('Deleting dashboard...');
+  try {
+    await api('DELETE', '/api/metrics-dashboard');
+    state.metricsDashboard = null;
+    renderMetricsDashboardCreateForm();
+    setStatus('Metrics dashboard deleted.');
+  } catch(e) {
+    let msg = e.message;
+    try { msg = JSON.parse(msg).detail || msg; } catch(_) {}
+    setStatus(`Error deleting dashboard: ${msg}`);
+    renderMetricsDashboardInfo();
   }
 }
 
@@ -1330,6 +1348,21 @@ async function mgrAddPanel(ruleId) {
     let msg = e.message;
     try { msg = JSON.parse(msg).detail || msg; } catch(_) {}
     setStatus(`Error adding panel: ${msg}`);
+  }
+}
+
+async function mgrRemovePanel(ruleId) {
+  if (!confirm(`Remove the panel for rule #${ruleId} from the metrics dashboard?`)) return;
+  try {
+    const data = await api('DELETE', `/api/metrics-dashboard/panels/${ruleId}`);
+    state.metricsDashboard.panel_count = data.panel_count;
+    renderMetricsDashboardInfo();
+    setStatus(`Panel for rule #${ruleId} removed from metrics dashboard.`);
+    loadAllRules(); // re-render to show "Add Panel" button again
+  } catch(e) {
+    let msg = e.message;
+    try { msg = JSON.parse(msg).detail || msg; } catch(_) {}
+    setStatus(`Error removing panel: ${msg}`);
   }
 }
 

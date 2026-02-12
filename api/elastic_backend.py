@@ -72,7 +72,7 @@ def _build_aggregations(compute: ComputeConfig, time_field: str) -> dict:
     aggs = {}
 
     if compute.type == ComputeType.count:
-        aggs["doc_count"] = {"value_count": {"field": time_field}}
+        aggs["event_count"] = {"value_count": {"field": time_field}}
     elif compute.type == ComputeType.sum:
         aggs[f"sum_{compute.field}"] = {"sum": {"field": compute.field}}
     elif compute.type == ComputeType.avg:
@@ -298,7 +298,7 @@ class ElasticMetricsBackend(MetricsBackend):
             properties[dim] = {"type": "keyword"}
 
         if compute.type == ComputeType.count:
-            properties["doc_count"] = {"type": "long"}
+            properties["event_count"] = {"type": "long"}
         elif compute.type == ComputeType.sum:
             properties[f"sum_{compute.field}"] = {"type": "double"}
         elif compute.type == ComputeType.avg:

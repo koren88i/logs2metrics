@@ -365,6 +365,35 @@ def api_create_metrics_dashboard(
     )
 
 
+@app.delete("/api/metrics-dashboard", status_code=200)
+def api_delete_metrics_dashboard(
+    conn: KibanaConnection | None = Depends(get_kibana_conn),
+):
+    """Delete the metrics dashboard and all its visualization/data-view saved objects."""
+    dashboard = kibana_connector.get_metrics_dashboard(conn=conn)
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="No metrics dashboard exists")
+
+    # Extract rule IDs from panel indices to clean up saved objects
+    panels = json.loads(dashboard["attributes"].get("panelsJSON", "[]"))
+    for panel in panels:
+        pi = panel.get("panelIndex", "")
+        if pi.startswith("p_rule_"):
+            try:
+                rid = int(pi.replace("p_rule_", ""))
+                kibana_connector._delete_saved_object(
+                    "visualization", f"{kibana_connector.METRICS_VIS_PREFIX}{rid}", conn=conn
+                )
+                kibana_connector._delete_saved_object(
+                    "index-pattern", f"{kibana_connector.METRICS_DV_PREFIX}{rid}", conn=conn
+                )
+            except (ValueError, TypeError):
+                pass
+
+    kibana_connector._delete_saved_object("dashboard", kibana_connector.METRICS_DASHBOARD_ID, conn=conn)
+    return {"success": True}
+
+
 @app.get("/api/metrics-dashboard", response_model=MetricsDashboardResponse)
 def api_get_metrics_dashboard(
     conn: KibanaConnection | None = Depends(get_kibana_conn),
@@ -452,6 +481,31 @@ def api_add_panel_to_dashboard(
         data_view_id=f"{kibana_connector.METRICS_DV_PREFIX}{rule_id}",
         panel_count=len(updated_panels),
     )
+
+
+@app.delete("/api/metrics-dashboard/panels/{rule_id}", status_code=200)
+def api_remove_panel_from_dashboard(
+    rule_id: int,
+    conn: KibanaConnection | None = Depends(get_kibana_conn),
+):
+    """Remove a rule's panel from the metrics dashboard."""
+    dashboard = kibana_connector.get_metrics_dashboard(conn=conn)
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="No metrics dashboard exists")
+
+    existing_panels = json.loads(dashboard["attributes"].get("panelsJSON", "[]"))
+    panel_index = f"p_rule_{rule_id}"
+    if not any(p.get("panelIndex") == panel_index for p in existing_panels):
+        raise HTTPException(status_code=404, detail=f"Panel for rule #{rule_id} not found in dashboard")
+
+    result = kibana_connector.remove_rule_panel_from_dashboard(rule_id, conn=conn)
+    errors = result.get("errors", [])
+    if errors:
+        raise HTTPException(status_code=502, detail=f"Kibana import failed: {errors}")
+
+    updated = kibana_connector.get_metrics_dashboard(conn=conn)
+    updated_panels = json.loads(updated["attributes"].get("panelsJSON", "[]")) if updated else []
+    return {"success": True, "rule_id": rule_id, "panel_count": len(updated_panels)}
 
 
 # -- Analysis endpoints ------------------------------------------------
