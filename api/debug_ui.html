@@ -132,13 +132,13 @@
 
 <div class="kibana-bar">
   <label>Kibana:</label>
-  <input type="text" id="kibanaUrl" placeholder="default (from server env)" style="min-width:280px">
+  <input type="text" id="kibanaUrl" placeholder="loading..." style="min-width:280px">
   <button class="secondary" id="authToggle" onclick="toggleKibanaAuth()" style="padding:0.3rem 0.6rem;font-size:0.8rem">Auth</button>
   <span id="kibanaAuthFields" style="display:none">
     <input type="text" id="kibanaUser" placeholder="username" style="width:100px">
     <input type="password" id="kibanaPass" placeholder="password" style="width:100px">
   </span>
-  <button class="secondary" onclick="testKibanaConnection()" style="padding:0.3rem 0.6rem;font-size:0.8rem">Test</button>
+  <button class="secondary" onclick="connectKibana()" style="padding:0.3rem 0.6rem;font-size:0.8rem">Connect</button>
   <span class="kb-status" id="kibanaStatus"></span>
 </div>
 
@@ -161,10 +161,11 @@
   <div class="step active" id="step1">
     <div class="step-header" onclick="toggleStep(1)">
       <div class="step-num">1</div>
-      <div><div class="step-title">Generate Logs</div><div class="step-desc">Clear the index, then generate 200 fresh log entries</div></div>
+      <div><div class="step-title">Generate Logs</div><div class="step-desc">Reset the index and/or generate fresh log entries</div></div>
     </div>
     <div class="step-body">
-      <button onclick="runStep1()">Reset &amp; Generate 200 Logs</button>
+      <button class="danger" onclick="resetLogs()">Reset Logs</button>
+      <button onclick="runStep1()">Generate 200 Logs</button>
       <button class="secondary" onclick="runStep1Toy()">Toy Scenario (10 identical logs)</button>
       <div class="output" id="out1"></div>
     </div>
@@ -226,11 +227,23 @@
     <h2>Rules Manager</h2>
     <button class="secondary" onclick="loadAllRules()">Refresh</button>
   </div>
+  <!-- Metrics Dashboard section -->
+  <div id="metricsDashboardSection" class="mgr-rule-card" style="border-left:3px solid #58a6ff;margin-bottom:1rem">
+    <div id="metricsDashboardContent">
+      <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+        <span style="font-weight:600;color:#58a6ff">Metrics Dashboard</span>
+        <input type="text" id="metricsDashName" placeholder="Dashboard name"
+               style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:0.3rem 0.5rem;font-size:0.85rem;min-width:200px">
+        <button onclick="createMetricsDashboard()">Create</button>
+        <span style="color:#8b949e;font-size:0.8rem">Create a Kibana dashboard to visualize your metric rules</span>
+      </div>
+    </div>
+  </div>
   <div id="mgrRuleList"><div style="color:#8b949e;font-size:0.85rem">Loading rules...</div></div>
 </div>
 </div><!-- /tab-rules -->
 
-<div class="status-bar" id="statusBar">Ready. Select a dashboard and click "Reset & Generate" to start.</div>
+<div class="status-bar" id="statusBar">Ready. Select a dashboard and generate logs to start.</div>
 
 <script>
 let state = {
@@ -239,7 +252,8 @@ let state = {
   panels: [],       // PanelAnalysis objects from dashboard
   rules: [],        // {id, name, transformId, metricsIndex, status, ready}
   pollIntervals: {},  // rule_id -> interval handle
-  mgrPollIntervals: {} // rules manager polling
+  mgrPollIntervals: {}, // rules manager polling
+  metricsDashboard: null // {dashboard_id, title, kibana_url, panel_count, panels}
 };
 
 function setStatus(msg) { document.getElementById('statusBar').innerHTML = msg; }
@@ -282,6 +296,7 @@ async function api(method, path, body) {
   }
   if (body) opts.body = JSON.stringify(body);
   const resp = await fetch(path, opts);
+  if (resp.status === 204) return null;
   const data = await resp.json();
   if (!resp.ok) throw new Error(JSON.stringify(data));
   return data;
@@ -294,9 +309,14 @@ function toggleKibanaAuth() {
   fields.style.display = fields.style.display === 'none' ? 'inline' : 'none';
 }
 
-async function testKibanaConnection() {
+async function connectKibana() {
+  const urlEl = document.getElementById('kibanaUrl');
+  if (!urlEl.value.trim()) {
+    document.getElementById('kibanaStatus').innerHTML = '<span style="color:#f85149">Enter a Kibana URL first</span>';
+    return;
+  }
   const statusEl = document.getElementById('kibanaStatus');
-  statusEl.innerHTML = loading('Testing...');
+  statusEl.innerHTML = loading('Connecting...');
   try {
     const data = await api('GET', '/api/kibana/test-connection');
     statusEl.innerHTML = `<span style="color:#3fb950">Connected — Kibana ${data.kibana_version} (${data.status})</span>`;
@@ -304,13 +324,20 @@ async function testKibanaConnection() {
   } catch(e) {
     let msg = e.message;
     try { msg = JSON.parse(msg).detail || msg; } catch(_) {}
-    statusEl.innerHTML = `<span style="color:#f85149">Failed: ${msg}</span>`;
+    statusEl.innerHTML = `<span style="color:#f85149">Connection failed: ${msg}</span>`;
   }
 }
 
+// Docker-internal → browser-accessible URL mapping
+const _KIBANA_URL_MAP = {
+  'http://kibana:5601': 'http://localhost:5602',
+  'http://kibana2:5601': 'http://localhost:5603',
+};
+
 function getKibanaExternalUrl() {
   const url = document.getElementById('kibanaUrl')?.value?.trim();
-  return url || 'http://localhost:5602';
+  if (!url) return 'http://localhost:5602';
+  return _KIBANA_URL_MAP[url] || url;
 }
 
 // ── Tab Switching ────────────────────────────────────────────────
@@ -349,9 +376,23 @@ function onDashboardChange() {
   state.dashboardId = sel.value;
   const d = state.dashboards.find(d => d.id === state.dashboardId);
   document.getElementById('dashDesc').textContent = d && d.description ? d.description : '';
+  // Reload panels if Step 3 is already unlocked
+  const step3 = document.getElementById('step3');
+  if (step3 && !step3.classList.contains('locked')) {
+    loadPanels();
+  }
 }
 
-document.addEventListener('DOMContentLoaded', loadDashboards);
+document.addEventListener('DOMContentLoaded', async () => {
+  // Fetch server config, pre-populate the Kibana URL field, and auto-connect
+  try {
+    const cfg = await fetch('/api/config').then(r => r.json());
+    document.getElementById('kibanaUrl').value = cfg.kibana_url || '';
+  } catch(_) {}
+  if (document.getElementById('kibanaUrl').value.trim()) {
+    connectKibana();
+  }
+});
 
 const LOOKBACK_OPTIONS = `
   <option value="now-1h">1 hour</option>
@@ -365,34 +406,40 @@ const LOOKBACK_OPTIONS = `
 
 // ── Step 1: Generate Logs ────────────────────────────────────────
 
-async function runStep1() {
+async function resetLogs() {
   const out = document.getElementById('out1');
   out.innerHTML = loading('Deleting existing logs...');
   try {
     const del = await api('DELETE', '/api/debug/logs');
-    out.innerHTML = loading(`Cleared ${del.deleted.toLocaleString()} old docs. Generating 200 fresh logs...`);
-    const data = await api('POST', '/api/debug/generate', {count: 200});
     out.innerHTML = `
       <div class="stat">Cleared: <b>${del.deleted.toLocaleString()}</b> old docs</div>
+    `;
+    setStatus('Logs cleared. Generate new logs to continue.');
+  } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+async function runStep1() {
+  const out = document.getElementById('out1');
+  out.innerHTML = loading('Generating 200 fresh logs...');
+  try {
+    const data = await api('POST', '/api/debug/generate', {count: 200});
+    out.innerHTML = `
       <div class="stat">Generated: <b>${data.count_ingested}</b> fresh logs</div>
       <div class="stat">Index: <b>${data.index}</b></div>
       <div class="stat"><b>${(data.duration_seconds * 1000).toFixed(0)}ms</b></div>
       <div class="panel"><div class="panel-label">Response</div><pre>${syntaxHL(data)}</pre></div>
     `;
     markDone(1); unlockStep(2);
-    setStatus('Step 1 done. Index has exactly 200 logs. Now fetch them from ES.');
+    setStatus('Step 1 done. Logs generated. Now fetch them from ES.');
   } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
 }
 
 async function runStep1Toy() {
   const out = document.getElementById('out1');
-  out.innerHTML = loading('Deleting existing logs...');
+  out.innerHTML = loading('Generating toy scenario...');
   try {
-    const del = await api('DELETE', '/api/debug/logs');
-    out.innerHTML = loading(`Cleared ${del.deleted.toLocaleString()} old docs. Generating toy scenario...`);
     const data = await api('POST', '/api/debug/generate-toy');
     out.innerHTML = `
-      <div class="stat">Cleared: <b>${del.deleted.toLocaleString()}</b> old docs</div>
       <div class="stat">Generated: <b>${data.count_ingested}</b> logs</div>
       <div class="stat">Scenario: <b>${data.description}</b></div>
       <div class="stat">Index: <b>${data.index}</b></div>
@@ -995,6 +1042,9 @@ async function runStep5() {
 // ── Rules Manager Tab ────────────────────────────────────────────
 
 async function loadAllRules() {
+  // Load metrics dashboard state first (for Add Panel button status)
+  await loadMetricsDashboard();
+
   const container = document.getElementById('mgrRuleList');
   container.innerHTML = loading('Loading rules...');
 
@@ -1011,7 +1061,8 @@ async function loadAllRules() {
       return;
     }
 
-    container.innerHTML = `<div class="stat" style="margin-bottom:0.75rem"><b>${rules.length}</b> rule(s)</div>`;
+    // Build all rule cards HTML first, then assign once to avoid innerHTML += destroying DOM references
+    let cardsHtml = `<div class="stat" style="margin-bottom:0.75rem"><b>${rules.length}</b> rule(s)</div>`;
 
     for (const rule of rules) {
       const computeDesc = rule.compute.field
@@ -1024,20 +1075,27 @@ async function loadAllRules() {
            : JSON.stringify(rule.source.filter_query))
         : 'none';
       const statusCls = `status-${rule.status}`;
-      const statusColor = rule.status === 'active' ? '#3fb950' : rule.status === 'error' ? '#f85149' : rule.status === 'paused' ? '#d29922' : '#8b949e';
 
       // Action buttons based on status
       let actions = '';
       actions += `<button class="secondary" onclick="mgrEditRule(${rule.id})">Edit</button>`;
       if (rule.status === 'active') {
         actions += `<button class="secondary" onclick="mgrCompareRule(${rule.id})">Compare</button>`;
+        // Add Panel button — check if already in metrics dashboard
+        const panelExists = state.metricsDashboard
+          && (state.metricsDashboard.panels || []).some(p => p.panelIndex === `p_rule_${rule.id}`);
+        if (panelExists) {
+          actions += `<button class="secondary" disabled style="color:#3fb950">Added</button>`;
+        } else {
+          actions += `<button class="secondary" onclick="mgrAddPanel(${rule.id})">Add Panel</button>`;
+        }
         actions += `<button class="secondary" onclick="mgrChangeStatus(${rule.id}, 'paused')">Pause</button>`;
       } else {
         actions += `<button onclick="mgrChangeStatus(${rule.id}, 'active')">Activate</button>`;
       }
       actions += `<button class="danger" onclick="mgrDeleteRule(${rule.id}, '${rule.name.replace(/'/g, "\\'")}')">Delete</button>`;
 
-      container.innerHTML += `
+      cardsHtml += `
         <div class="mgr-rule-card ${statusCls}" id="mgrCard${rule.id}">
           <div class="mgr-rule-header">
             <div class="mgr-rule-info">
@@ -1060,8 +1118,13 @@ async function loadAllRules() {
           <div class="mgr-rule-expand" id="mgrExpand${rule.id}" style="display:none"></div>
         </div>
       `;
+    }
 
-      // Poll status for active rules
+    // Set all HTML at once so DOM elements are stable before polling
+    container.innerHTML = cardsHtml;
+
+    // Now poll statuses — DOM elements won't be destroyed
+    for (const rule of rules) {
       if (rule.status === 'active') {
         mgrPollStatus(rule.id);
       } else if (rule.status === 'error') {
@@ -1142,7 +1205,7 @@ async function mgrDeleteRule(ruleId, ruleName) {
       clearTimeout(state.mgrPollIntervals[ruleId]);
       delete state.mgrPollIntervals[ruleId];
     }
-    await fetch(`/api/rules/${ruleId}`, {method: 'DELETE'});
+    await api('DELETE', `/api/rules/${ruleId}`);
     const card = document.getElementById('mgrCard' + ruleId);
     if (card) card.remove();
     setStatus(`Rule #${ruleId} deleted. Transform and metrics index cleaned up.`);
@@ -1163,6 +1226,96 @@ async function mgrChangeStatus(ruleId, newStatus) {
     setStatus(`Error: ${e.message}`);
   }
 }
+
+// ── Metrics Dashboard functions ──────────────────────────────────
+
+async function loadMetricsDashboard() {
+  try {
+    const data = await api('GET', '/api/metrics-dashboard');
+    state.metricsDashboard = data;
+    renderMetricsDashboardInfo();
+  } catch(e) {
+    // 404 = no dashboard yet
+    state.metricsDashboard = null;
+    renderMetricsDashboardCreateForm();
+  }
+}
+
+function renderMetricsDashboardCreateForm() {
+  const el = document.getElementById('metricsDashboardContent');
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+      <span style="font-weight:600;color:#58a6ff">Metrics Dashboard</span>
+      <input type="text" id="metricsDashName" placeholder="Dashboard name"
+             style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:0.3rem 0.5rem;font-size:0.85rem;min-width:200px">
+      <button onclick="createMetricsDashboard()">Create</button>
+      <span style="color:#8b949e;font-size:0.8rem">Create a Kibana dashboard to visualize your metric rules</span>
+    </div>
+  `;
+}
+
+function renderMetricsDashboardInfo() {
+  const d = state.metricsDashboard;
+  if (!d) return;
+  const el = document.getElementById('metricsDashboardContent');
+  const kibUrl = getKibanaExternalUrl();
+  const viewUrl = `${kibUrl}/app/dashboards#/view/${d.dashboard_id}`;
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
+      <div>
+        <span style="font-weight:600;color:#58a6ff">Metrics Dashboard:</span>
+        <b style="color:#c9d1d9">${d.title}</b>
+        <span class="stat" style="margin-left:0.5rem">${d.panel_count} panel(s)</span>
+        <a href="${viewUrl}" target="_blank"
+           style="color:#58a6ff;margin-left:0.75rem;font-size:0.85rem">View in Kibana &rarr;</a>
+      </div>
+    </div>
+  `;
+}
+
+async function createMetricsDashboard() {
+  const nameInput = document.getElementById('metricsDashName');
+  const name = nameInput?.value?.trim();
+  if (!name) { alert('Please enter a dashboard name'); return; }
+  const el = document.getElementById('metricsDashboardContent');
+  el.innerHTML = loading('Creating dashboard...');
+  try {
+    const data = await api('POST', '/api/metrics-dashboard', { title: name });
+    state.metricsDashboard = data;
+    renderMetricsDashboardInfo();
+    setStatus(`Metrics dashboard "${name}" created.`);
+  } catch(e) {
+    el.innerHTML = `<div style="color:#f85149">Error: ${e.message}</div>`;
+    setTimeout(renderMetricsDashboardCreateForm, 3000);
+  }
+}
+
+async function mgrAddPanel(ruleId) {
+  if (!state.metricsDashboard) {
+    alert('Create a metrics dashboard first (at the top of this tab).');
+    return;
+  }
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Adding...';
+  try {
+    const data = await api('POST', `/api/metrics-dashboard/panels/${ruleId}`);
+    btn.textContent = 'Added';
+    btn.style.color = '#3fb950';
+    // Update dashboard state
+    state.metricsDashboard.panel_count = data.panel_count;
+    renderMetricsDashboardInfo();
+    setStatus(`Panel for rule #${ruleId} added to metrics dashboard.`);
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'Add Panel';
+    let msg = e.message;
+    try { msg = JSON.parse(msg).detail || msg; } catch(_) {}
+    setStatus(`Error adding panel: ${msg}`);
+  }
+}
+
+// ── Rule editing ────────────────────────────────────────────────
 
 async function mgrEditRule(ruleId) {
   const expandEl = document.getElementById('mgrExpand' + ruleId);
@@ -1282,7 +1435,7 @@ async function cleanup() {
     }
     // Delete all rules
     for (const rule of state.rules) {
-      try { await fetch(`/api/rules/${rule.id}`, {method: 'DELETE'}); } catch(e) {}
+      try { await api('DELETE', `/api/rules/${rule.id}`); } catch(e) {}
     }
     setStatus(`${state.rules.length} rule(s) deleted. Transforms and metrics indices cleaned up.`);
     state.rules = [];

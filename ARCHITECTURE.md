@@ -57,7 +57,7 @@ A platform service that derives metrics from existing Elasticsearch logs, driven
 - FastAPI + SQLModel + SQLite
 - `LogMetricRule` CRUD at `/api/rules`
 - ES connector (`es_connector.py`) — index metadata, mappings, cardinality, stats via `elasticsearch-py`
-- Kibana connector (`kibana_connector.py`) — dashboard listing, panel parsing via `httpx`; supports per-request URL + basic auth override via `KibanaConnection` dataclass
+- Kibana connector (`kibana_connector.py`) — dashboard listing, panel parsing, metrics dashboard creation + visualization cloning via `httpx`; supports per-request URL + basic auth override via `KibanaConnection` dataclass
 - Connector response models (`connector_models.py`) — IndexInfo, IndexMapping, FieldCardinality, IndexStats, DashboardSummary, PanelAnalysis, DashboardDetail
 - Database (`database.py`) — SQLite engine + session + auto-migration for new columns
 - Config (`config.py`) — ES_URL / KIBANA_URL from environment variables
@@ -86,7 +86,10 @@ A platform service that derives metrics from existing Elasticsearch logs, driven
 3. PROVISION (automated)
    Saved rule --> ES continuous transform --> metrics index + ILM policy
 
-4. QUERY (user benefit)
+4. VISUALIZE (user action)
+   Create metrics dashboard --> add rule panels (cloned from original vis) --> Kibana dashboard reads from metrics indices
+
+5. QUERY (user benefit)
    Dashboard query --> hits metrics index (fast) instead of log index (slow)
 ```
 
@@ -116,7 +119,7 @@ logs2metrics/
     config.py                 # ES_URL, KIBANA_URL from env vars
     connector_models.py       # Pydantic models for connector responses
     es_connector.py           # ES read-only connector (elasticsearch-py)
-    kibana_connector.py       # Kibana read-only connector (httpx)
+    kibana_connector.py       # Kibana connector: read dashboards + write metrics dashboards/visualizations (httpx)
     scoring.py                # Suitability scoring engine (0-95)
     analyzer.py               # Dashboard analyzer (scoring orchestrator)
     cost_estimator.py         # Log vs metric storage cost comparison
@@ -167,15 +170,29 @@ All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-
 |--------|------|-------------|
 | POST | `/api/estimate` | Cost estimate + guardrail validation for a draft rule |
 
+### Metrics Dashboard
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/metrics-dashboard` | Create empty Kibana metrics dashboard (body: `{title}`) |
+| GET | `/api/metrics-dashboard` | Get dashboard info: id, title, panel count, panels (404 if none) |
+| POST | `/api/metrics-dashboard/panels/{rule_id}` | Add rule as cloned visualization panel (409 if already added) |
+
+### Server Config
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/config` | Server-side config (default KIBANA_URL) for UI pre-population |
+
 ### Portal UI + Proxies
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/debug` | Portal UI: Pipeline + Rules Manager |
-| POST | `/api/debug/generate` | Proxy to log-generator (avoids CORS) |
-| POST | `/api/debug/generate-toy` | Proxy to log-generator toy scenario |
-| DELETE | `/api/debug/logs` | Proxy to log-generator delete endpoint |
-| POST | `/api/es/search` | Thin ES search proxy for portal UI |
-| GET | `/api/transforms/{id}` | Proxy to ES _transform API |
+| POST | `/api/debug/generate` | Proxy to log-generator (routes by `X-Kibana-Url`) |
+| POST | `/api/debug/generate-toy` | Proxy to log-generator toy scenario (routes by `X-Kibana-Url`) |
+| DELETE | `/api/debug/logs` | Proxy to log-generator delete endpoint (routes by `X-Kibana-Url`) |
+| POST | `/api/es/search` | Thin ES search proxy (routes by `X-Kibana-Url`) |
+| GET | `/api/transforms/{id}` | Proxy to ES _transform API (routes by `X-Kibana-Url`) |
+
+All proxy endpoints accept the `X-Kibana-Url` header and route to the corresponding backend services via `_KIBANA_SERVICE_MAP` in `main.py`. The service map also includes `kibana_auth` for security-enabled instances — `get_kibana_conn` auto-fills Kibana credentials from the map when the user doesn't provide them, mirroring how `_get_es_client` handles ES auth.
 
 ---
 
@@ -186,11 +203,12 @@ A self-contained single-page application at `http://localhost:8091/debug` with t
 ### Kibana Connection Bar
 
 At the top of the portal, a connection bar allows pointing at any Kibana instance:
-- **URL input**: Enter a Kibana URL (e.g. `http://remote-kibana:5601`). Leave empty to use the server's default `KIBANA_URL` env var.
+- **URL input**: Pre-populated from `GET /api/config` (server's default `KIBANA_URL`) on page load. Enter any Kibana URL (e.g. `http://kibana2:5601`).
 - **Auth toggle**: Click "Auth" to reveal username/password fields for HTTP basic auth.
-- **Test button**: Probes `GET /api/kibana/test-connection` and shows Kibana version + health status.
-- On successful test, dashboards auto-reload from the new Kibana.
-- Connection headers (`X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass`) are injected on every API call when a URL is entered.
+- **Connect button**: Validates connectivity via `GET /api/kibana/test-connection`, shows Kibana version + health status, and loads dashboards on success. Blocks empty URL with an error message.
+- **Auto-connect on load**: If the URL field is pre-populated, the portal auto-connects and shows status immediately.
+- Connection headers (`X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass`) are injected on every API call based on current field values (stateless, no persistent session).
+- **Docker URL mapping**: "View in Kibana" links map Docker-internal URLs to browser-accessible localhost URLs (`http://kibana:5601` → `http://localhost:5602`, `http://kibana2:5601` → `http://localhost:5603`).
 
 ### Tab 1: Pipeline (5-Step Walkthrough)
 
@@ -198,8 +216,9 @@ At the top of the portal, a connection bar allows pointing at any Kibana instanc
 
 ```
 Step 1: Generate Logs
-  ├── "Reset & Generate 200 Logs" — random realistic data across 24h
-  └── "Toy Scenario (10 identical logs)" — predictable dataset for verification
+  ├── "Reset Logs" — deletes all documents from the log index
+  ├── "Generate 200 Logs" — random realistic data across 24h (additive, does not clear first)
+  └── "Toy Scenario (10 identical logs)" — predictable dataset for verification (additive)
        10x (auth-service, /api/login, 200, 42ms) in one 1-minute window
        → expect 1 metric point with count=10
 
@@ -247,26 +266,32 @@ Per-rule card:
   ├── Origin: "From: Dashboard Title > Panel Title" with clickable Kibana link
   ├── Live status: health, docs processed/indexed (single fetch; polls only for yellow/transitioning)
   └── Actions (by status):
-       ├── active:  [Edit] [Compare ▼] [Pause] [Delete]
+       ├── active:  [Edit] [Compare ▼] [Add Panel] [Pause] [Delete]
        ├── draft:   [Edit] [Activate] [Delete]
        ├── paused:  [Edit] [Activate] [Delete]
        └── error:   [Edit] [Activate] [Delete]
 
 Compare: expands inline with side-by-side log agg vs metrics (reuses runComparison)
 Edit: inline form (name, time bucket, dimensions, compute); deprovisions→saves→re-provisions active rules
+Add Panel: adds rule's cloned visualization to the metrics dashboard (shown only for active rules; disabled after adding)
 Activate/Pause: status transitions via PUT /api/rules/{id}
 Delete: confirms, then DELETE /api/rules/{id} (API handles deprovision)
+
+Metrics Dashboard section (above rule list):
+  ├── If no dashboard: name input + "Create Dashboard" button
+  └── If dashboard exists: title, panel count, "View in Kibana" link
 ```
 
 ### Key Behaviors
 
-- **Kibana connection**: Session-level URL override with optional basic auth. Empty field = server default. All API calls inject connection headers when a URL is entered.
-- **Dashboard selector**: Dynamically populated; drives panel loading and analysis across the Pipeline tab.
+- **Kibana connection**: Session-level URL override with optional basic auth. URL pre-populated from server config on load, auto-connects. All API calls inject connection headers based on current field values (stateless).
+- **Dashboard selector**: Dynamically populated; drives panel loading and analysis across the Pipeline tab. Changing the selection reloads Step 3 panels immediately if the step is already unlocked.
 - **Guardrail bypass**: Small test datasets often fail the net_savings guardrail (metric storage > log storage). The "Skip guardrails" checkbox passes `?skip_guardrails=true` to the API.
 - **Status display (Rules Manager)**: Shows whatever the backend returns immediately (green/red/unknown/stopped with docs processed). Only polls further if health is `yellow` (transitioning). Does NOT require a checkpoint — avoids the infinite "Checking..." bug with zero-match transforms.
 - **Zero-match handling (Pipeline tab)**: Transforms that match zero documents (e.g. error filter with all-200 data) are considered ready once they reach `health: green` with a completed checkpoint, regardless of `docs_processed`.
 - **Cleanup**: Button at the end of Pipeline deletes all session rules + transforms + metrics indices and resets the UI.
 - **Rules Manager persistence**: Shows all rules from the database regardless of which session created them.
+- **Metrics Dashboard**: One dashboard at a time (fixed ID `l2m-metrics-dashboard`). Panels are cloned from original visualizations — preserves chart type, axes, legend, colors, date_histogram + terms aggs. Only the metric agg is rewired to read pre-computed fields from `l2m-metrics-rule-{id}` indices. Each rule gets its own Kibana data view.
 
 ---
 
@@ -326,6 +351,9 @@ LogMetricRule
 | Saved search ID | `l2m-recent-logs` |
 | Vis: errors | `l2m-errors-by-service` |
 | Vis: latency | `l2m-latency-by-endpoint` |
+| Metrics dashboard | `l2m-metrics-dashboard` |
+| Metrics vis (per rule) | `l2m-metrics-vis-rule-{id}` |
+| Metrics data view (per rule) | `l2m-metrics-dv-rule-{id}` |
 
 ---
 

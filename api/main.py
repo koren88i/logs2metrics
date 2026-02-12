@@ -1,5 +1,6 @@
 """Logs2Metrics API — LogMetricRule CRUD service."""
 
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -31,12 +32,17 @@ from database import create_db, get_session
 from elastic_backend import backend as metrics_backend
 from guardrails import EstimateResponse, GuardrailResult
 from models import (
+    ComputeConfig,
+    GroupByConfig,
     LogMetricRule,
+    OriginConfig,
     RuleCreate,
     RuleResponse,
     RuleStatus,
     RuleUpdate,
+    SourceConfig,
 )
+from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
@@ -80,11 +86,15 @@ def get_kibana_conn(
     """Extract optional Kibana connection override from request headers."""
     if not x_kibana_url:
         return None
-    return KibanaConnection(
-        url=x_kibana_url.rstrip("/"),
-        username=x_kibana_user,
-        password=x_kibana_pass,
-    )
+    url = x_kibana_url.rstrip("/")
+    username = x_kibana_user
+    password = x_kibana_pass
+    # Auto-fill auth from service map for known Kibana instances
+    if not username or not password:
+        svc = _KIBANA_SERVICE_MAP.get(url)
+        if svc and "kibana_auth" in svc:
+            username, password = svc["kibana_auth"]
+    return KibanaConnection(url=url, username=username, password=password)
 
 
 # ── CRUD endpoints ────────────────────────────────────────────────────
@@ -302,6 +312,148 @@ def api_test_kibana_connection(conn: KibanaConnection | None = Depends(get_kiban
         raise HTTPException(status_code=502, detail=f"Cannot reach Kibana at {url}: {e}")
 
 
+# -- Server config endpoint ────────────────────────────────────────────
+
+
+@app.get("/api/config")
+def api_config():
+    """Return server-side config (default URLs) so the UI can display them."""
+    return {"kibana_url": KIBANA_URL}
+
+
+# -- Metrics Dashboard endpoints ----------------------------------------
+
+
+class CreateMetricsDashboardRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+
+
+class MetricsDashboardResponse(BaseModel):
+    dashboard_id: str
+    title: str
+    kibana_url: str
+    panel_count: int = 0
+    panels: list[dict] = Field(default_factory=list)
+
+
+class AddPanelResponse(BaseModel):
+    success: bool
+    dashboard_id: str
+    rule_id: int
+    visualization_id: str
+    data_view_id: str
+    panel_count: int
+
+
+@app.post("/api/metrics-dashboard", response_model=MetricsDashboardResponse, status_code=201)
+def api_create_metrics_dashboard(
+    body: CreateMetricsDashboardRequest,
+    conn: KibanaConnection | None = Depends(get_kibana_conn),
+):
+    """Create an empty Kibana metrics dashboard."""
+    result = kibana_connector.create_metrics_dashboard(body.title, conn=conn)
+    if not result.get("success"):
+        errors = result.get("errors", [])
+        if errors:
+            raise HTTPException(status_code=502, detail=f"Kibana import failed: {errors}")
+    kibana_url = conn.url if conn else KIBANA_URL
+    return MetricsDashboardResponse(
+        dashboard_id=kibana_connector.METRICS_DASHBOARD_ID,
+        title=body.title,
+        kibana_url=f"{kibana_url}/app/dashboards#/view/{kibana_connector.METRICS_DASHBOARD_ID}",
+        panel_count=0,
+    )
+
+
+@app.get("/api/metrics-dashboard", response_model=MetricsDashboardResponse)
+def api_get_metrics_dashboard(
+    conn: KibanaConnection | None = Depends(get_kibana_conn),
+):
+    """Get the current metrics dashboard info (if it exists)."""
+    dashboard = kibana_connector.get_metrics_dashboard(conn=conn)
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="No metrics dashboard exists yet")
+    attrs = dashboard["attributes"]
+    panels = json.loads(attrs.get("panelsJSON", "[]"))
+    kibana_url = conn.url if conn else KIBANA_URL
+    return MetricsDashboardResponse(
+        dashboard_id=dashboard["id"],
+        title=attrs.get("title", ""),
+        kibana_url=f"{kibana_url}/app/dashboards#/view/{dashboard['id']}",
+        panel_count=len(panels),
+        panels=panels,
+    )
+
+
+@app.post("/api/metrics-dashboard/panels/{rule_id}", response_model=AddPanelResponse)
+def api_add_panel_to_dashboard(
+    rule_id: int,
+    session: Session = Depends(get_session),
+    conn: KibanaConnection | None = Depends(get_kibana_conn),
+):
+    """Add a rule's metrics visualization as a panel to the metrics dashboard."""
+    rule = session.get(LogMetricRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    if rule.status != RuleStatus.active.value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Rule must be active (current: {rule.status})",
+        )
+
+    # Verify metrics dashboard exists
+    dashboard = kibana_connector.get_metrics_dashboard(conn=conn)
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="No metrics dashboard exists. Create one first.")
+
+    # Check if panel already exists
+    existing_panels = json.loads(dashboard["attributes"].get("panelsJSON", "[]"))
+    panel_index = f"p_rule_{rule_id}"
+    if any(p.get("panelIndex") == panel_index for p in existing_panels):
+        raise HTTPException(status_code=409, detail=f"Panel for rule #{rule_id} already exists in dashboard")
+
+    # Extract rule config
+    compute = ComputeConfig(**rule.compute)
+    group_by = GroupByConfig(**rule.group_by)
+    source = SourceConfig(**rule.source)
+    origin = OriginConfig(**rule.origin) if rule.origin else None
+
+    if not origin or not origin.panel_id:
+        raise HTTPException(status_code=400, detail="Rule has no origin panel to clone from")
+
+    try:
+        result = kibana_connector.add_rule_panel_to_dashboard(
+            rule_id=rule_id,
+            rule_name=rule.name,
+            origin_dashboard_id=origin.dashboard_id,
+            origin_panel_id=origin.panel_id,
+            compute_type=compute.type.value if hasattr(compute.type, "value") else compute.type,
+            compute_field=compute.field,
+            dimensions=group_by.dimensions,
+            time_field=source.time_field,
+            conn=conn,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    errors = result.get("errors", [])
+    if errors:
+        raise HTTPException(status_code=502, detail=f"Kibana import failed: {errors}")
+
+    # Re-fetch to get updated panel count
+    updated = kibana_connector.get_metrics_dashboard(conn=conn)
+    updated_panels = json.loads(updated["attributes"].get("panelsJSON", "[]")) if updated else []
+
+    return AddPanelResponse(
+        success=True,
+        dashboard_id=kibana_connector.METRICS_DASHBOARD_ID,
+        rule_id=rule_id,
+        visualization_id=f"{kibana_connector.METRICS_VIS_PREFIX}{rule_id}",
+        data_view_id=f"{kibana_connector.METRICS_DV_PREFIX}{rule_id}",
+        panel_count=len(updated_panels),
+    )
+
+
 # -- Analysis endpoints ------------------------------------------------
 
 
@@ -333,14 +485,50 @@ def api_estimate(body: RuleCreate):
 
 _es = Elasticsearch(ES_URL)
 
+# Map Kibana URLs to their corresponding log-generator and ES service URLs
+_KIBANA_SERVICE_MAP = {
+    "http://kibana:5601": {
+        "log_generator": "http://log-generator:8000",
+        "es_url": "http://elasticsearch:9200",
+    },
+    "http://kibana2:5601": {
+        "log_generator": "http://log-generator2:8000",
+        "es_url": "http://elasticsearch2:9200",
+        "es_auth": ("elastic", "admin1"),
+        "kibana_auth": ("elastic", "admin1"),
+    },
+}
+
+
+def _get_log_generator_url(x_kibana_url: str | None) -> str:
+    """Resolve the log-generator URL from the connected Kibana URL."""
+    if x_kibana_url:
+        svc = _KIBANA_SERVICE_MAP.get(x_kibana_url.rstrip("/"))
+        if svc:
+            return svc["log_generator"]
+    return "http://log-generator:8000"
+
+
+def _get_es_client(x_kibana_url: str | None) -> Elasticsearch:
+    """Resolve the ES client from the connected Kibana URL."""
+    if x_kibana_url:
+        svc = _KIBANA_SERVICE_MAP.get(x_kibana_url.rstrip("/"))
+        if svc:
+            kwargs = {}
+            if "es_auth" in svc:
+                kwargs["basic_auth"] = svc["es_auth"]
+            return Elasticsearch(svc["es_url"], **kwargs)
+    return _es
+
 
 @app.post("/api/debug/generate")
-def debug_generate(request_body: dict):
+def debug_generate(request_body: dict, x_kibana_url: str | None = Header(default=None)):
     """Proxy to log-generator service to avoid CORS."""
     count = request_body.get("count", 10)
+    gen_url = _get_log_generator_url(x_kibana_url)
     with httpx.Client(timeout=30) as client:
         resp = client.post(
-            "http://log-generator:8000/generate",
+            f"{gen_url}/generate",
             json={"count": count},
         )
         resp.raise_for_status()
@@ -348,36 +536,40 @@ def debug_generate(request_body: dict):
 
 
 @app.post("/api/debug/generate-toy")
-def debug_generate_toy():
+def debug_generate_toy(x_kibana_url: str | None = Header(default=None)):
     """Proxy to log-generator toy scenario."""
+    gen_url = _get_log_generator_url(x_kibana_url)
     with httpx.Client(timeout=30) as client:
-        resp = client.post("http://log-generator:8000/generate-toy")
+        resp = client.post(f"{gen_url}/generate-toy")
         resp.raise_for_status()
         return resp.json()
 
 
 @app.delete("/api/debug/logs")
-def debug_delete_logs():
+def debug_delete_logs(x_kibana_url: str | None = Header(default=None)):
     """Proxy to log-generator DELETE /logs to avoid CORS."""
+    gen_url = _get_log_generator_url(x_kibana_url)
     with httpx.Client(timeout=30) as client:
-        resp = client.delete("http://log-generator:8000/logs")
+        resp = client.delete(f"{gen_url}/logs")
         resp.raise_for_status()
         return resp.json()
 
 
 @app.post("/api/es/search")
-def es_search_proxy(request_body: dict):
+def es_search_proxy(request_body: dict, x_kibana_url: str | None = Header(default=None)):
     """Thin ES search proxy for the debug UI."""
     index = request_body.get("index", "app-logs")
     body = request_body.get("body", {"query": {"match_all": {}}})
-    result = _es.search(index=index, body=body)
+    es_client = _get_es_client(x_kibana_url)
+    result = es_client.search(index=index, body=body)
     return dict(result)
 
 
 @app.get("/api/transforms/{transform_id}")
-def get_transform(transform_id: str):
+def get_transform(transform_id: str, x_kibana_url: str | None = Header(default=None)):
     """Proxy to ES _transform API."""
-    result = _es.transform.get_transform(transform_id=transform_id)
+    es_client = _get_es_client(x_kibana_url)
+    result = es_client.transform.get_transform(transform_id=transform_id)
     return dict(result)
 
 
