@@ -28,6 +28,11 @@ Logs2Metrics automates converting those repeated aggregations into pre-computed 
 - `api/debug_ui.html` — Self-contained portal UI (inline JS, no framework)
 - `api/models.py` — Pydantic/SQLModel domain models
 
+**Doc maintenance**: After completing work, update docs to stay in sync:
+- `CHANGELOG.md` — Add an entry for any new feature, bug fix, or significant change
+- `ARCHITECTURE.md` — Update if project structure, API endpoints, or components changed
+- This file — Update if new coding standards or gotchas were discovered
+
 ## Running Tests
 
 ```bash
