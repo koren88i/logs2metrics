@@ -503,7 +503,7 @@ async function loadPanels() {
       return;
     }
 
-    container.innerHTML = `<div class="stat" style="margin-bottom:0.5rem">Dashboard: <b>${dashboard.title || dashboard.id}</b> — <b>${state.panels.length}</b> panels</div>`;
+    let panelsHtml = `<div class="stat" style="margin-bottom:0.5rem">Dashboard: <b>${dashboard.title || dashboard.id}</b> — <b>${state.panels.length}</b> panels</div>`;
 
     state.panels.forEach((p, idx) => {
       const aggList = (p.agg_types || []).join(', ') || 'none';
@@ -511,7 +511,7 @@ async function loadPanels() {
       const metrics = (p.metrics || []).map(m => m.field ? `${m.type}(${m.field})` : m.type).join(', ') || 'none';
       const isRawDocs = p.has_raw_docs;
 
-      container.innerHTML += `
+      panelsHtml += `
         <div class="panel-card" id="panelCard${idx}">
           <div class="panel-card-header">
             <div class="panel-card-info">
@@ -551,6 +551,7 @@ async function loadPanels() {
         </div>
       `;
     });
+    container.innerHTML = panelsHtml;
   } catch(e) { container.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
 }
 
