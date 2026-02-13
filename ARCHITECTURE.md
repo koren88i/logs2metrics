@@ -115,6 +115,7 @@ Portal UI: `http://localhost:8091/debug` | Swagger: `http://localhost:8091/docs`
 ```
 logs2metrics/
   docker-compose.yml          # ES + Kibana + log-generator + api
+  README.md                   # GitHub landing page: overview, quick start, API table
   CLAUDE.md                   # Coding standards & quick reference (auto-loaded by Claude Code)
   ARCHITECTURE.md             # This file — technical reference
   CHANGELOG.md                # Project history: completed phases, bug post-mortems

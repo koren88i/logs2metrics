@@ -31,6 +31,7 @@ Logs2Metrics automates converting those repeated aggregations into pre-computed 
 **Doc maintenance**: After completing work, update docs to stay in sync:
 - `CHANGELOG.md` — Add an entry for any new feature, bug fix, or significant change
 - `ARCHITECTURE.md` — Update if project structure, API endpoints, or components changed
+- `README.md` — Update if stack, quick start steps, API surface, or project structure changed
 - This file — Update if new coding standards or gotchas were discovered
 
 ## Running Tests
