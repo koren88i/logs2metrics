@@ -60,6 +60,7 @@ Portal UI: `http://localhost:8091/debug` | Swagger: `http://localhost:8091/docs`
 ### Log Generator (`log-generator/`)
 - FastAPI service with inline HTML UI
 - `POST /generate { count }` — creates a batch of structured logs (random, spread across last 24h)
+- `POST /generate-recent { count }` — creates logs with timestamps at exactly `now` (for live injection after transforms are running; all events land in the current open bucket so the transform picks them up)
 - `POST /generate-toy` — creates a predictable toy dataset: 10 identical logs (auth-service, /api/login, acme-corp, status 200, 42ms) within a single 1-minute window, for verifiable end-to-end testing
 - `DELETE /logs` — deletes all documents from the log index
 - `GET /status` — last batch result
@@ -83,7 +84,7 @@ Portal UI: `http://localhost:8091/debug` | Swagger: `http://localhost:8091/docs`
 - Backend interface (`backend.py`) — abstract `MetricsBackend` ABC + response models (TransformHealth, ProvisionResult, BackendStatus)
 - Elastic backend (`elastic_backend.py`) — ES transform provisioning, status, deprovisioning via `elasticsearch-py`
 - Portal UI (`debug_ui.html`) — self-service portal with two tabs served at `GET /debug` (see below):
-  - **Pipeline tab**: 5-step interactive walkthrough with dynamic dashboard selector
+  - **Pipeline tab**: 6-step interactive walkthrough with dynamic dashboard selector
   - **Rules Manager tab**: persistent rule CRUD (view, edit, compare, activate/pause, delete)
 - Swagger UI at `/docs`
 
@@ -144,7 +145,7 @@ logs2metrics/
     guardrails.py             # Pre-creation validation (cardinality, dimensions, savings)
     backend.py                # Abstract MetricsBackend interface + response models
     elastic_backend.py        # ES transform provisioning (ILM, index, transform lifecycle)
-    debug_ui.html             # Portal UI: Pipeline (5-step walkthrough) + Rules Manager (served at GET /debug)
+    debug_ui.html             # Portal UI: Pipeline (6-step walkthrough) + Rules Manager (served at GET /debug)
     tests/
       conftest.py             # Shared fixtures: factories, mocks, FastAPI TestClient with in-memory SQLite
       test_models.py          # Pydantic model validation tests
@@ -220,10 +221,12 @@ All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-
 |--------|------|-------------|
 | GET | `/debug` | Portal UI: Pipeline + Rules Manager |
 | POST | `/api/debug/generate` | Proxy to log-generator (routes by `X-Kibana-Url`) |
+| POST | `/api/debug/generate-recent` | Proxy to log-generator — events timestamped at `now` (routes by `X-Kibana-Url`) |
 | POST | `/api/debug/generate-toy` | Proxy to log-generator toy scenario (routes by `X-Kibana-Url`) |
 | DELETE | `/api/debug/logs` | Proxy to log-generator delete endpoint (routes by `X-Kibana-Url`) |
 | POST | `/api/es/search` | Thin ES search proxy (routes by `X-Kibana-Url`) |
 | GET | `/api/transforms/{id}` | Proxy to ES _transform API (routes by `X-Kibana-Url`) |
+| POST | `/api/transforms/{id}/schedule-now` | Trigger immediate transform checkpoint (bypass frequency wait) |
 
 All proxy endpoints accept the `X-Kibana-Url` header and route to the corresponding backend services via `_KIBANA_SERVICE_MAP` in `main.py`. The service map also includes `kibana_auth` for security-enabled instances — `get_kibana_conn` auto-fills Kibana credentials from the map when the user doesn't provide them, mirroring how `_get_es_client` handles ES auth.
 
@@ -243,7 +246,7 @@ At the top of the portal, a connection bar allows pointing at any Kibana instanc
 - Connection headers (`X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass`) are injected on every API call based on current field values (stateless, no persistent session).
 - **Docker URL mapping**: "View in Kibana" links map Docker-internal URLs to browser-accessible localhost URLs (`http://kibana:5601` → `http://localhost:5602`, `http://kibana2:5601` → `http://localhost:5603`).
 
-### Tab 1: Pipeline (5-Step Walkthrough)
+### Tab 1: Pipeline (6-Step Walkthrough)
 
 **Dashboard selector** at the top populates from `GET /api/kibana/dashboards`. Replaces hardcoded dashboard ID.
 
@@ -287,6 +290,14 @@ Step 5: Side-by-Side Comparison
        └── RIGHT: Simple fetch from pre-computed metrics index
        Shows: query JSON, results table, docs scanned vs metric docs, query times, reduction %
        Column headers adapt to compute type: Count / Avg(field) / Sum(field) / Pct(field)
+
+Step 6: Live Injection
+  └── After initial comparison, inject more data and watch transforms update:
+       ├── "Inject 50 Recent Events" — generates logs with timestamps at `now`,
+       │    then calls _schedule_now on each transform to trigger immediate processing
+       ├── "Re-run Comparison" — re-executes side-by-side comparison directly.
+       │    Shows updated doc counts and metric values
+       └── "Cleanup" — deletes all session rules + transforms + metrics indices
 ```
 
 ### Tab 2: Rules Manager

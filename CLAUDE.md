@@ -106,3 +106,6 @@ python -m pytest -v          # 135 tests, no Docker required
 | Kibana panel reference names | Dashboard prefixes with `{panelIndex}:` but panels store without prefix. |
 | `searchSourceJSON` is required | Dashboard attributes MUST include it or Kibana crashes. |
 | Lens panels hard to create via API | Legacy `visualization` saved objects with `visState` + `aggs` are more reliable. |
+| Continuous transforms are forward-only | Only process docs in time buckets AFTER the checkpoint. The 24h initial generation seals all past buckets. Injected events must be at exactly `now` (current open bucket) — even 30s in the past can land in a sealed bucket. |
+| Transform `sync.time.delay` is baked in | Set at creation time. Changing the value in code only affects new rules — existing must be deleted and recreated. |
+r

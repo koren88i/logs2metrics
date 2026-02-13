@@ -58,6 +58,12 @@
 - **Status refresh + shared polling**: `renderStatus()`, `refreshStatus()`, `pollStatus()` shared functions
 - **Configurable transform frequency**: Optional `frequency` field on `GroupByConfig`
 - **Dev workflow**: Bind-mount `api/` directory + uvicorn `--reload` for live editing
+- **Live injection (Step 6)**: New pipeline step to inject recent events after transforms are running, re-run comparison, and watch metric counts update. New `POST /generate-recent` endpoint in log-generator spreads logs across last 30 seconds so transforms pick them up quickly. Extracted shared `_build_log_docs()` helper to avoid duplication between `/generate` and `/generate-recent`.
+- **Comparison query fixes**: Fixed three bugs in the side-by-side comparison that caused log-side and metric-side results to diverge: (1) metric query sorted descending while log query sorted ascending — now both sort ascending; (2) metric query size capped at 200, truncating results — increased to 10000; (3) only first dimension used in log aggregation query — now builds nested terms aggs for ALL dimensions.
+- **Transform sync delay reduced**: Changed transform `sync.time.delay` from 60s to 1s in `elastic_backend.py` so injected events are picked up faster during demos. Note: delay is baked into transforms at creation time — existing rules must be cleaned up and recreated.
+- **Step 6 schedule-now + auto-wait**: After injection, calls ES `_schedule_now` API on each transform to trigger an immediate checkpoint (bypasses the 1-minute frequency wait). Re-run Comparison polls `docs_indexed` until it increases, then runs comparison. Inject → process → compare now takes seconds, not minutes.
+- **Generate-recent timestamps at now**: Changed `/generate-recent` from 30s spread to `max_age_seconds=0` (all events at exactly `now`). The initial 24h generation advances the transform checkpoint to ~now, sealing all past buckets. Any spread into past seconds risks landing in an already-closed bucket — so zero spread is the only safe option.
+- **Upstream error messages improved**: Fixed global `HTTPStatusError` handler in `api/main.py` — previously all upstream HTTP errors were labeled "Kibana resource not found". Now shows actual upstream URL and status code (e.g., "Upstream resource not found: http://log-generator:8000/generate-recent").
 
 ---
 
@@ -175,3 +181,5 @@ These gaps were partially addressed by the test suite (135 tests across 12 files
 15. `innerHTML +=` in a loop destroys DOM references.
 16. Data view creation via REST API is fragile — prefer NDJSON import with `index-pattern` type.
 17. `doc_count` is a reserved ES field name — use `event_count`.
+18. ES continuous transforms only process docs FORWARD from their last checkpoint — backdated events are permanently invisible. Inject events with timestamps near `now`.
+19. Transform `sync.time.delay` is baked into the transform at creation time. Changing the value in code only affects new rules — existing rules must be deleted and recreated.

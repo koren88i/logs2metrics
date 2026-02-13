@@ -58,15 +58,17 @@ async def es_not_found_handler(request, exc):
 
 
 @app.exception_handler(HTTPStatusError)
-async def kibana_error_handler(request, exc):
-    if exc.response.status_code == 404:
+async def httpx_error_handler(request, exc):
+    url = str(exc.request.url)
+    status = exc.response.status_code
+    if status == 404:
         return JSONResponse(
             status_code=404,
-            content={"detail": f"Kibana resource not found"},
+            content={"detail": f"Upstream resource not found: {url}"},
         )
     return JSONResponse(
         status_code=502,
-        content={"detail": f"Kibana error: {exc.response.status_code}"},
+        content={"detail": f"Upstream error {status}: {url}"},
     )
 
 
@@ -589,6 +591,20 @@ def debug_generate(request_body: dict, x_kibana_url: str | None = Header(default
         return resp.json()
 
 
+@app.post("/api/debug/generate-recent")
+def debug_generate_recent(request_body: dict, x_kibana_url: str | None = Header(default=None)):
+    """Proxy to log-generator recent logs (timestamped at now) for live injection."""
+    count = request_body.get("count", 50)
+    gen_url = _get_log_generator_url(x_kibana_url)
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(
+            f"{gen_url}/generate-recent",
+            json={"count": count},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
 @app.post("/api/debug/generate-toy")
 def debug_generate_toy(x_kibana_url: str | None = Header(default=None)):
     """Proxy to log-generator toy scenario."""
@@ -624,6 +640,17 @@ def get_transform(transform_id: str, x_kibana_url: str | None = Header(default=N
     """Proxy to ES _transform API."""
     es_client = _get_es_client(x_kibana_url)
     result = es_client.transform.get_transform(transform_id=transform_id)
+    return dict(result)
+
+
+@app.post("/api/transforms/{transform_id}/schedule-now")
+def schedule_transform_now(transform_id: str, x_kibana_url: str | None = Header(default=None)):
+    """Trigger an immediate checkpoint for a continuous transform.
+
+    Bypasses the frequency wait — the transform will check for new data right away.
+    """
+    es_client = _get_es_client(x_kibana_url)
+    result = es_client.transform.schedule_now_transform(transform_id=transform_id)
     return dict(result)
 
 

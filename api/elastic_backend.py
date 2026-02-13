@@ -351,7 +351,7 @@ class ElasticMetricsBackend(MetricsBackend):
         sync_block = {
             "time": {
                 "field": source_cfg.time_field,
-                "delay": "60s",
+                "delay": "1s",
             }
         }
 

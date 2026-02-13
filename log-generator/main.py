@@ -74,6 +74,17 @@ def ensure_index():
         )
 
 
+def _build_log_docs(count: int, max_age_seconds: int) -> list[dict]:
+    """Build `count` random log docs with timestamps spread across last `max_age_seconds`."""
+    now = datetime.now(timezone.utc)
+    docs = []
+    for _ in range(count):
+        ts = now - timedelta(seconds=random.randint(0, max_age_seconds))
+        doc = generate_log_entry(ts)
+        docs.append({"_index": ES_INDEX, "_source": doc})
+    return docs
+
+
 @app.post("/generate")
 def generate_logs(req: GenerateRequest):
     global last_batch
@@ -83,11 +94,7 @@ def generate_logs(req: GenerateRequest):
 
     # Spread logs across the last 24 hours for realistic dashboards
     now = datetime.now(timezone.utc)
-    actions = []
-    for _ in range(req.count):
-        ts = now - timedelta(seconds=random.randint(0, 86400))
-        doc = generate_log_entry(ts)
-        actions.append({"_index": ES_INDEX, "_source": doc})
+    actions = _build_log_docs(req.count, max_age_seconds=86400)
 
     success, errors = helpers.bulk(es, actions, raise_on_error=False)
     duration = round(time.time() - start, 2)
@@ -99,6 +106,40 @@ def generate_logs(req: GenerateRequest):
         "duration_seconds": duration,
         "index": ES_INDEX,
         "generated_at": now.isoformat(),
+    }
+    return last_batch
+
+
+@app.post("/generate-recent")
+def generate_recent_logs(req: GenerateRequest):
+    """Generate logs with timestamps at exactly now.
+
+    Used for live injection after transforms are running.  All events get
+    the same timestamp (now) so they always land in the current, still-open
+    time bucket.  The initial 24h generation causes the transform checkpoint
+    to advance to ~now, sealing all past buckets.  Any spread into past
+    seconds risks landing in an already-closed bucket — so we use 0 spread.
+    """
+    global last_batch
+    start = time.time()
+
+    ensure_index()
+
+    now = datetime.now(timezone.utc)
+    actions = _build_log_docs(req.count, max_age_seconds=0)
+
+    success, errors = helpers.bulk(es, actions, raise_on_error=False)
+    duration = round(time.time() - start, 2)
+
+    last_batch = {
+        "count_requested": req.count,
+        "count_ingested": success,
+        "errors": len(errors) if isinstance(errors, list) else 0,
+        "duration_seconds": duration,
+        "index": ES_INDEX,
+        "generated_at": now.isoformat(),
+        "recent": True,
+        "description": f"{success} logs timestamped at now.",
     }
     return last_batch
 

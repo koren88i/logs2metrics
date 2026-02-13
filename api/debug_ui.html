@@ -218,6 +218,19 @@
     </div>
   </div>
 
+  <!-- Step 6 -->
+  <div class="step locked" id="step6">
+    <div class="step-header" onclick="toggleStep(6)">
+      <div class="step-num">6</div>
+      <div><div class="step-title">Live Injection</div><div class="step-desc">Inject recent events and re-run comparison to watch the transform pick them up</div></div>
+    </div>
+    <div class="step-body">
+      <button onclick="injectMore()">Inject 50 Recent Events</button>
+      <button class="secondary" onclick="runStep6Comparison()">Re-run Comparison</button>
+      <div class="output" id="out6"></div>
+    </div>
+  </div>
+
 </div>
 </div><!-- /tab-pipeline -->
 
@@ -915,12 +928,17 @@ async function runComparison(ruleInfo, outputEl) {
     }
   };
   if (dims.length > 0) {
-    logQuery.aggs.by_bucket.aggs.by_dim = { terms: { field: dims[0] }, aggs: Object.assign({}, logAggMetric) };
+    // Nest terms aggs for all dimensions (innermost gets the metric agg)
+    let innerAggs = Object.assign({}, logAggMetric);
+    for (let i = dims.length - 1; i >= 0; i--) {
+      innerAggs = { [`by_dim_${i}`]: { terms: { field: dims[i], size: 100 }, aggs: i === dims.length - 1 ? Object.assign({}, logAggMetric) : innerAggs } };
+    }
+    Object.assign(logQuery.aggs.by_bucket.aggs, innerAggs);
   } else {
     Object.assign(logQuery.aggs.by_bucket.aggs, logAggMetric);
   }
 
-  const metricQuery = { size: 200, query: {match_all: {}}, sort: [{[timeField]: 'desc'}] };
+  const metricQuery = { size: 10000, query: {match_all: {}}, sort: [{[timeField]: 'asc'}] };
 
   try {
     const sourceIndex = ruleInfo.source.index_pattern;
@@ -932,33 +950,49 @@ async function runComparison(ruleInfo, outputEl) {
     const allBuckets = logResult.aggregations.by_bucket.buckets;
     const logBuckets = allBuckets.filter(b => b.doc_count > 0);
     let logRows = '';
-    for (const b of logBuckets) {
-      if (b.by_dim) {
-        for (const sb of b.by_dim.buckets) {
-          const val = sb.metric_val !== undefined ? sb.metric_val.value : sb.doc_count;
-          logRows += `<tr><td>${new Date(b.key_as_string).toLocaleString()}</td><td>${sb.key}</td><td>${val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-'}</td></tr>`;
+
+    // Recursively extract rows from nested dimension aggregations
+    function extractLogRows(bucket, ts, dimValues) {
+      // Check if there's a deeper dimension agg
+      const nextDimKey = `by_dim_${dimValues.length}`;
+      if (bucket[nextDimKey]) {
+        for (const sb of bucket[nextDimKey].buckets) {
+          extractLogRows(sb, ts, [...dimValues, sb.key]);
         }
       } else {
+        // Leaf level — extract the metric value
+        const val = bucket.metric_val !== undefined ? bucket.metric_val.value : bucket.doc_count;
+        const dimStr = dimValues.length > 0 ? dimValues.join(' / ') : '-';
+        const fmtVal = val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-';
+        logRows += `<tr><td>${ts}</td><td>${dimStr}</td><td>${fmtVal}</td></tr>`;
+      }
+    }
+
+    for (const b of logBuckets) {
+      const ts = new Date(b.key_as_string).toLocaleString();
+      if (dims.length > 0) {
+        extractLogRows(b, ts, []);
+      } else {
         const val = b.metric_val !== undefined ? b.metric_val.value : b.doc_count;
-        logRows += `<tr><td>${new Date(b.key_as_string).toLocaleString()}</td><td>-</td><td>${val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-'}</td></tr>`;
+        const fmtVal = val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-';
+        logRows += `<tr><td>${ts}</td><td>-</td><td>${fmtVal}</td></tr>`;
       }
     }
 
     const metricHits = metricResult.hits.hits;
-    const dimField = dims.length > 0 ? dims[0] : null;
     let metricRows = metricHits.map(h => {
       const s = h._source;
-      const dimVal = dimField ? (s[dimField] || '-') : '-';
+      const dimStr = dims.length > 0 ? dims.map(d => s[d] || '-').join(' / ') : '-';
       let val = s[metricField];
       if (val === undefined || val === null) val = '-';
       else if (typeof val === 'number') val = val.toFixed(2);
       else if (typeof val === 'object') val = JSON.stringify(val);
-      return `<tr><td>${new Date(s[timeField]).toLocaleString()}</td><td>${dimVal}</td><td>${val}</td></tr>`;
+      return `<tr><td>${new Date(s[timeField]).toLocaleString()}</td><td>${dimStr}</td><td>${val}</td></tr>`;
     }).join('');
 
     const logTotal = logResult.hits.total.value;
     const metricTotal = metricResult.hits.total.value;
-    const dimLabel = dimField || 'Dimension';
+    const dimLabel = dims.length > 0 ? dims.join(' / ') : 'Dimension';
 
     outputEl.innerHTML = `
       <div style="margin-bottom:0.75rem">
@@ -1023,14 +1057,66 @@ async function runStep5() {
 
   await runComparison(ruleInfo, out);
 
-  // Add cleanup button after comparison
+  markDone(5);
+  unlockStep(6);
+  setStatus('Comparison complete. Inject more events in Step 6 to watch transforms update.');
+}
+
+// ── Step 6: Live Injection ───────────────────────────────────────
+
+async function injectMore() {
+  const out = document.getElementById('out6');
+  out.innerHTML = loading('Injecting 50 recent events...');
+  try {
+    const result = await api('POST', '/api/debug/generate-recent', {count: 50});
+
+    // Trigger immediate checkpoint on all ready transforms (bypass frequency wait)
+    for (const rule of state.rules) {
+      if (!rule.ready) continue;
+      try {
+        await api('POST', `/api/transforms/${rule.transformId}/schedule-now`);
+      } catch(e) { /* non-fatal */ }
+    }
+
+    out.innerHTML = `
+      <div class="panel">
+        <div class="stat">Injected: <b style="color:#3fb950">${result.count_ingested}</b> events — transforms triggered.</div>
+        <div class="stat" style="color:#8b949e">Click <b>Re-run Comparison</b> to see updated numbers.</div>
+      </div>
+    `;
+    setStatus(`Injected ${result.count_ingested} events, transforms triggered. Click Re-run Comparison.`);
+  } catch(e) {
+    out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`;
+  }
+}
+
+async function runStep6Comparison() {
+  const out = document.getElementById('out6');
+  const rule = getSelectedRule();
+  if (!rule) {
+    out.innerHTML = '<div style="color:#f85149">No ready rules to compare.</div>';
+    return;
+  }
+
+  const ruleInfo = {
+    id: rule.id,
+    name: rule.name,
+    source: rule.ruleBody.source,
+    group_by: rule.ruleBody.group_by,
+    compute: rule.ruleBody.compute,
+    metricsIndex: rule.metricsIndex
+  };
+
+  await runComparison(ruleInfo, out);
+
+  // Add action buttons after comparison
   out.innerHTML += `
     <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid #21262d;">
+      <button onclick="injectMore()" style="margin-right:0.5rem">Inject 50 More</button>
       <button class="danger" onclick="cleanup()">Cleanup: Delete All Rules + Transforms</button>
     </div>
   `;
-  markDone(5);
-  setStatus('Done! Full pipeline visible. Click Cleanup when finished.');
+  setStatus('Comparison updated. Inject more events or clean up when done.');
 }
 
 // ── Rules Manager Tab ────────────────────────────────────────────
