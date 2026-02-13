@@ -31,6 +31,21 @@ A platform service that derives metrics from existing Elasticsearch logs, driven
 
 ---
 
+## Getting Started
+
+```bash
+cd logs2metrics
+docker compose up -d --build
+# Wait for Kibana to be healthy (~30s)
+cd seed-dashboards
+pip install -r requirements.txt
+python seed.py --kibana http://localhost:5602
+```
+
+Portal UI: `http://localhost:8091/debug` | Swagger: `http://localhost:8091/docs`
+
+---
+
 ## Components
 
 ### Docker Compose Stack
@@ -100,10 +115,9 @@ A platform service that derives metrics from existing Elasticsearch logs, driven
 ```
 logs2metrics/
   docker-compose.yml          # ES + Kibana + log-generator + api
-  PLAN.md                     # Phased implementation plan
-  STATUS.md                   # Current state & handoff notes
-  ARCHITECTURE.md             # This file
-  CLAUDE.md                   # Project memory: bug catalog, coding/design standards, test suite docs
+  CLAUDE.md                   # Coding standards & quick reference (auto-loaded by Claude Code)
+  ARCHITECTURE.md             # This file — technical reference
+  CHANGELOG.md                # Project history: completed phases, bug post-mortems
   pytest.ini                  # Test config: testpaths, pythonpath, markers
   requirements-test.txt       # Test deps: pytest, pytest-cov, httpx
   log-generator/
