@@ -94,6 +94,44 @@ python -m pytest -v          # 135 tests, no Docker required
 
 ---
 
+## Bug Investigation Methodology
+
+When something doesn't work as expected, **do not jump to the first plausible explanation**. Follow this sequence:
+
+1. **Characterize the symptom precisely.** What exactly is wrong? Which specific data is missing/wrong? What data IS correct? Write it down.
+
+2. **Look at the pattern.** The shape of what's wrong tells you the category of bug:
+   - Missing data: *which* data? Earlier events? Later ones? Random? The pattern rules out entire categories. (e.g., "earlier events dropped but later ones processed" rules out timing/delay — if it were delay, later events would be dropped.)
+   - Wrong values: off by a constant factor? Always zero? Only wrong for specific inputs?
+   - Intermittent: timing-dependent? Load-dependent? Configuration-dependent?
+
+3. **List ALL possible causes before investigating any.** For "data not processed," possible causes include: timing/delay, structural (sealed buckets, wrong index), filtering (query mismatch), permissions, wrong endpoint, data never written, data written to wrong location, etc.
+
+4. **Eliminate causes using the pattern from step 2.** The pattern should rule out most causes immediately, before you read a single line of code.
+
+5. **Distinguish code bugs from mental model bugs.** If the code does exactly what you wrote but the result is wrong, the bug is in your understanding of the external system (ES, Kibana, etc.) — not in the code. These are harder: you need to verify your assumptions about how the external system works, not just re-read your own logic.
+
+**Anti-pattern**: Assuming the first hypothesis is correct and iterating on fixes without disproving alternatives. This leads to a chain of patches addressing symptoms of a misdiagnosis.
+
+---
+
+## Test Strategy
+
+The current test suite (135 tests) mocks all external services (ES, Kibana, log-generator). This means:
+- **What it validates**: Our code does what we wrote — correct API contracts, model validation, error handling, static patterns.
+- **What it cannot validate**: Whether our assumptions about external system behavior are correct.
+
+Every mock encodes an assumption. If the assumption is wrong, the mock confirms our wrong mental model. The sealed-bucket bug is the example: we assumed events with timestamps 30s in the past would be processed. No unit test could catch this because our mocks would process them.
+
+**Gaps to be aware of**:
+- Behavioral assumptions about ES (checkpoint semantics, bucket sealing, reserved field names) are untested.
+- End-to-end data flow (generate → transform → query metrics) is never validated against real ES.
+- UI interaction sequences (multi-step pipeline) have no automated coverage.
+
+When adding features that depend on external system behavior, explicitly document the behavioral assumption in code comments and consider whether it can be verified.
+
+---
+
 ## ES / Kibana Gotchas
 
 | Gotcha | Details |
@@ -108,4 +146,3 @@ python -m pytest -v          # 135 tests, no Docker required
 | Lens panels hard to create via API | Legacy `visualization` saved objects with `visState` + `aggs` are more reliable. |
 | Continuous transforms are forward-only | Only process docs in time buckets AFTER the checkpoint. The 24h initial generation seals all past buckets. Injected events must be at exactly `now` (current open bucket) — even 30s in the past can land in a sealed bucket. |
 | Transform `sync.time.delay` is baked in | Set at creation time. Changing the value in code only affects new rules — existing must be deleted and recreated. |
-r
