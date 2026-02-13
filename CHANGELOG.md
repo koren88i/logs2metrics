@@ -65,6 +65,15 @@
 - **Generate-recent timestamps at now**: Changed `/generate-recent` from 30s spread to `max_age_seconds=0` (all events at exactly `now`). The initial 24h generation advances the transform checkpoint to ~now, sealing all past buckets. Any spread into past seconds risks landing in an already-closed bucket — so zero spread is the only safe option.
 - **Upstream error messages improved**: Fixed global `HTTPStatusError` handler in `api/main.py` — previously all upstream HTTP errors were labeled "Kibana resource not found". Now shows actual upstream URL and status code (e.g., "Upstream resource not found: http://log-generator:8000/generate-recent").
 
+## Production Hardening
+
+- **Configurable `sync.time.delay`**: New `sync_delay` field on `GroupByConfig` (default `"30s"`, was hardcoded `"1s"`). Exposed in both Step 3 panel creation and Rules Manager edit form. The previous 1s default silently dropped late-arriving events. Changing delay on an active rule now triggers automatic deprovision + reprovision (delay is baked into transforms). Config changes to `group_by`, `compute`, or `source` on active rules now correctly reprovision.
+- **Server-side transform health monitoring**: Background async task checks all active rules' transform health every 60s (configurable via `HEALTH_CHECK_INTERVAL` env var). If a transform is `red` or `stopped`, the rule's status is automatically set to `error`. New `GET /api/health` endpoint returns monitor state: `monitor_running`, `last_check_time`, `check_interval_seconds`, `rules_in_error`. The monitor catches all exceptions to never crash the main app.
+- **Graduated auto-refresh scoring**: Replaced binary 0/10 scoring for the `auto_refresh` signal with a graduated scale: ≤10s→10pts, ≤30s→8, ≤1m→6, ≤5m→4, ≤30m→2, >30m→1, disabled→0. Explanation text now includes the interval and qualitative description (frequent/moderate/infrequent).
+- **Clearer UI labels for timing settings**: Renamed "Frequency" → "Check Interval" and "Delay" → "Late Data Buffer" across Step 3, Rules Manager cards, and Rules Manager edit form. Added tooltip and inline help text explaining what each setting does and how to choose values. API field names (`frequency`, `sync_delay`) unchanged for backward compatibility.
+- **Bucket auto-fill from panel interval**: The Bucket dropdown in Step 3 now pre-selects the panel's actual `date_histogram` interval (from `fixed_interval`, `calendar_interval`, or legacy `interval` in the Kibana visualization). Panels using Kibana's `auto` interval fall back to `1m`. New `date_histogram_interval` field on `PanelAnalysis` model. Bucket label shows `*` when auto-filled, with a tooltip explaining auto-interval vs fixed bucket tradeoff.
+- **Compare side-by-side alignment**: Both sides of the comparison now sort rows identically (by timestamp then dimension string), use the same label format, and cap query/result panels at fixed heights with scroll. Easier to visually verify that pre-computed metrics match raw log aggregations.
+
 ---
 
 ## Bug Post-Mortems

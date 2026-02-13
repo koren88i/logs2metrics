@@ -227,6 +227,7 @@ def _parse_visualization(
     metrics = []
     group_by_fields = []
     time_field = None
+    date_histogram_interval = None
 
     for agg in aggs:
         if not agg.get("enabled", True):
@@ -244,6 +245,17 @@ def _parse_visualization(
         elif schema == "segment":
             if agg_type == "date_histogram":
                 time_field = params.get("field", "timestamp")
+                # Extract the fixed or calendar interval configured on the panel.
+                # Kibana stores it as "fixed_interval" (e.g. "1m") or "interval"
+                # (legacy format, e.g. "1m", "auto"). "auto" means Kibana picks
+                # dynamically based on the time range — we can't pre-fill that.
+                raw_interval = (
+                    params.get("fixed_interval")
+                    or params.get("calendar_interval")
+                    or params.get("interval")
+                )
+                if raw_interval and raw_interval != "auto":
+                    date_histogram_interval = raw_interval
         elif schema == "group":
             field = params.get("field")
             if field:
@@ -254,6 +266,7 @@ def _parse_visualization(
         title=title or attrs.get("title", ""),
         index_pattern=index_pattern,
         time_field=time_field,
+        date_histogram_interval=date_histogram_interval,
         visualization_type=vis_type,
         agg_types=agg_types,
         metrics=metrics,

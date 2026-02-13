@@ -63,6 +63,22 @@ All services run via Docker Compose. Data is stored in SQLite (rules) and Elasti
 4. **Visualize** — Clones original Kibana visualizations, rewires them to read from metrics indices, adds to a metrics dashboard
 5. **Compare** — Runs log aggregation and metrics query side-by-side to show doc reduction and query speedup
 
+## Rule Configuration
+
+Each rule has two timing settings that control the underlying ES continuous transform:
+
+| Setting | UI Label | Default | What it controls |
+|---------|----------|---------|-----------------|
+| `time_bucket` | Bucket | *from panel* | The time granularity for metric aggregation (e.g. `1m`, `5m`). Auto-filled from the panel's date_histogram interval when available. Falls back to `1m` when the panel uses Kibana's auto-interval. Larger buckets produce fewer metric docs (cheaper storage), smaller buckets give finer resolution. |
+| `frequency` | Check Interval | `auto` | How often the transform checks for new data to process. `auto` picks `max(time_bucket, 1m)`. Lower = fresher metrics but more ES overhead. |
+| `sync_delay` | Late Data Buffer | `30s` | How long the transform waits behind real-time before sealing a time bucket. This buffer exists because events can arrive in ES after the moment they occurred — due to log shipper batching, network retries, or ES indexing delays. Once a bucket is sealed, late-arriving events are **silently dropped**. Set this to exceed your worst-case log pipeline delay. |
+
+**Bucket auto-fill**: When you analyze a panel in Step 3, the Bucket dropdown is pre-selected from the panel's actual date_histogram interval (marked with `*`). This ensures the metrics match the original chart's resolution. You might still want to change it — for example, a panel using `10s` buckets produces 6x more metric docs than `1m`. If nobody needs 10-second granularity, choosing `1m` saves significant storage.
+
+**Auto-interval vs fixed bucket**: Many Kibana panels use auto-interval, where the bucket size changes dynamically based on the time range (e.g. ~30s for a 1-hour view, ~3h for a 30-day view). The transform cannot do this — it needs a fixed interval baked in at creation time. This interval sets the **floor of resolution**: you can always aggregate up at query time (e.g. query 1m metric docs at 1h granularity), but you can never go finer than what's stored. When auto-interval is detected, the UI defaults to `1m` — fine enough for most operational dashboards without excessive storage cost.
+
+**How to choose a Late Data Buffer value**: If your logs reliably land in ES within 10 seconds of their timestamp, `10s` is safe. The `30s` default adds a safety margin for pipeline hiccups (shipper restarts, ES backpressure, network blips). The tradeoff is purely latency — metrics appear behind real-time by this amount.
+
 ## API Overview
 
 | Method | Endpoint | Description |
@@ -78,6 +94,7 @@ All services run via Docker Compose. Data is stored in SQLite (rules) and Elasti
 | `POST` | `/api/metrics-dashboard` | Create a Kibana metrics dashboard |
 | `POST` | `/api/metrics-dashboard/panels/{rule_id}` | Add rule panel to metrics dashboard |
 | `GET` | `/api/kibana/dashboards` | List Kibana dashboards |
+| `GET` | `/api/health` | Health monitor status + rules in error |
 | `GET` | `/api/kibana/test-connection` | Test Kibana connectivity |
 
 All Kibana-related endpoints accept `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass` headers for multi-instance support.
@@ -97,7 +114,7 @@ Connect to any Kibana instance (with optional auth) directly from the portal hea
 
 ```bash
 pip install -r requirements-test.txt -r api/requirements.txt
-python -m pytest -v    # 135 tests, no Docker required
+python -m pytest -v    # 167 tests, no Docker required
 ```
 
 All external dependencies (ES, Kibana) are mocked. Tests cover model validation, scoring engine, cost estimator, guardrails, transform provisioning, API endpoints, and static analysis checks.
@@ -116,7 +133,7 @@ logs2metrics/
     guardrails.py           # Pre-creation validation
     cost_estimator.py       # Storage cost comparison
     debug_ui.html           # Portal UI (self-contained)
-    tests/                  # 135 unit/integration tests
+    tests/                  # 167 unit/integration tests
   log-generator/            # Synthetic log data service
   seed-dashboards/          # Kibana dashboard seeder
 ```

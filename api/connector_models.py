@@ -58,6 +58,7 @@ class PanelAnalysis(BaseModel):
     title: str
     index_pattern: str | None = None
     time_field: str | None = None
+    date_histogram_interval: str | None = None
     visualization_type: str
     agg_types: list[str] = Field(default_factory=list)
     metrics: list[MetricInfo] = Field(default_factory=list)

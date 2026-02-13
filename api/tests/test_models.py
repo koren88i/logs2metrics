@@ -51,6 +51,22 @@ class TestGroupByConfig:
         g = GroupByConfig(frequency="5m")
         assert g.frequency == "5m"
 
+    def test_default_sync_delay_is_30s(self):
+        from models import GroupByConfig
+        g = GroupByConfig()
+        assert g.sync_delay == "30s"
+
+    def test_custom_sync_delay(self):
+        from models import GroupByConfig
+        g = GroupByConfig(sync_delay="5m")
+        assert g.sync_delay == "5m"
+
+    def test_sync_delay_backward_compatible(self):
+        """Existing rules without sync_delay in JSON get the default."""
+        from models import GroupByConfig
+        g = GroupByConfig(**{"time_bucket": "1m", "dimensions": []})
+        assert g.sync_delay == "30s"
+
 
 class TestComputeConfig:
     def test_count_type_no_field(self):

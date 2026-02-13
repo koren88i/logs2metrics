@@ -1,8 +1,10 @@
 """Logs2Metrics API — LogMetricRule CRUD service."""
 
+import asyncio
 import json
 import logging
 from datetime import datetime
+from typing import Any
 from pathlib import Path
 
 from elasticsearch import Elasticsearch, NotFoundError as ESNotFoundError
@@ -18,7 +20,7 @@ import guardrails
 import kibana_connector
 from analyzer import DashboardAnalysis
 from kibana_connector import KibanaConnection
-from backend import BackendStatus
+from backend import BackendStatus, TransformHealth
 from connector_models import (
     DashboardDetail,
     DashboardSummary,
@@ -27,7 +29,7 @@ from connector_models import (
     IndexMapping,
     IndexStats,
 )
-from config import ES_URL, KIBANA_URL
+from config import ES_URL, HEALTH_CHECK_INTERVAL, KIBANA_URL
 from database import create_db, get_session
 from elastic_backend import backend as metrics_backend
 from guardrails import EstimateResponse, GuardrailResult
@@ -47,6 +49,14 @@ from pydantic import BaseModel, Field
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="Logs2Metrics API", version="0.6.0")
+
+
+# ── Health monitor state ──────────────────────────────────────────────
+_health_monitor_state: dict[str, Any] = {
+    "last_check_time": None,
+    "rules_in_error": [],
+    "running": False,
+}
 
 
 @app.exception_handler(ESNotFoundError)
@@ -73,8 +83,69 @@ async def httpx_error_handler(request, exc):
 
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     create_db()
+    asyncio.create_task(_health_monitor_loop())
+
+
+# ── Health monitor background task ────────────────────────────────────
+
+
+async def _health_monitor_loop():
+    """Background task: periodically check transform health for all active rules."""
+    _health_monitor_state["running"] = True
+    log.info("Health monitor started (interval=%ds)", HEALTH_CHECK_INTERVAL)
+
+    while True:
+        try:
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+            _check_all_active_rules()
+        except asyncio.CancelledError:
+            log.info("Health monitor cancelled")
+            break
+        except Exception:
+            log.exception("Health monitor error (will retry next cycle)")
+
+
+def _check_all_active_rules():
+    """Check every active rule's transform health. Update DB if unhealthy."""
+    from database import engine  # local import to avoid circular dependency at module level
+
+    errors_found: list[dict] = []
+
+    with Session(engine) as session:
+        active_rules = session.exec(
+            select(LogMetricRule).where(LogMetricRule.status == RuleStatus.active.value)
+        ).all()
+
+        for rule in active_rules:
+            try:
+                status = metrics_backend.get_status(rule.id)
+
+                if status.health in (TransformHealth.red, TransformHealth.stopped):
+                    rule.status = RuleStatus.error.value
+                    rule.updated_at = datetime.utcnow()
+                    session.add(rule)
+                    log.warning(
+                        "Health monitor: rule %d transform health=%s — setting status to error. Error: %s",
+                        rule.id, status.health.value, status.error or "none",
+                    )
+                    errors_found.append({
+                        "rule_id": rule.id,
+                        "rule_name": rule.name,
+                        "transform_health": status.health.value,
+                        "error": status.error,
+                    })
+            except Exception:
+                log.exception("Health monitor: failed to check rule %d", rule.id)
+
+        if errors_found:
+            session.commit()
+
+    _health_monitor_state["last_check_time"] = datetime.utcnow().isoformat()
+    _health_monitor_state["rules_in_error"] = errors_found
+    if not errors_found:
+        log.debug("Health monitor: all %d active rules healthy", len(active_rules))
 
 
 # ── Kibana connection dependency ──────────────────────────────────────
@@ -209,6 +280,23 @@ def update_rule(
                 metrics_backend.deprovision(rule.id)
             except Exception as e:
                 log.warning("Deprovision error for rule %s: %s", rule_id, e)
+    elif old_status == RuleStatus.active.value and new_status == RuleStatus.active.value:
+        # Config changed on an active rule — reprovision if transform-affecting fields changed.
+        # sync_delay, time_bucket, frequency, compute, and source are baked into the transform.
+        config_fields = {"group_by", "compute", "source"}
+        if config_fields & update_data.keys():
+            log.info("Config changed on active rule %s — reprovisioning transform", rule_id)
+            try:
+                metrics_backend.deprovision(rule.id)
+            except Exception as e:
+                log.warning("Deprovision error during reprovision for rule %s: %s", rule_id, e)
+            result = metrics_backend.provision(rule)
+            if not result.success:
+                rule.status = RuleStatus.error.value
+                rule.updated_at = datetime.utcnow()
+                session.add(rule)
+                session.commit()
+                session.refresh(rule)
 
     return RuleResponse.from_db(rule)
 
@@ -254,6 +342,18 @@ def get_rule_backend_status(rule_id: int, session: Session = Depends(get_session
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/health")
+def api_health():
+    """Return health monitor status: last check time and any rules in error."""
+    return {
+        "status": "ok",
+        "monitor_running": _health_monitor_state["running"],
+        "last_check_time": _health_monitor_state["last_check_time"],
+        "check_interval_seconds": HEALTH_CHECK_INTERVAL,
+        "rules_in_error": _health_monitor_state["rules_in_error"],
+    }
 
 
 # -- ES Connector endpoints --------------------------------------------

@@ -37,7 +37,7 @@ Logs2Metrics automates converting those repeated aggregations into pre-computed 
 ## Running Tests
 
 ```bash
-python -m pytest -v          # 135 tests, no Docker required
+python -m pytest -v          # 167 tests, no Docker required
 ```
 
 ---
@@ -117,7 +117,7 @@ When something doesn't work as expected, **do not jump to the first plausible ex
 
 ## Test Strategy
 
-The current test suite (135 tests) mocks all external services (ES, Kibana, log-generator). This means:
+The current test suite (167 tests) mocks all external services (ES, Kibana, log-generator). This means:
 - **What it validates**: Our code does what we wrote — correct API contracts, model validation, error handling, static patterns.
 - **What it cannot validate**: Whether our assumptions about external system behavior are correct.
 
@@ -145,4 +145,5 @@ When adding features that depend on external system behavior, explicitly documen
 | `searchSourceJSON` is required | Dashboard attributes MUST include it or Kibana crashes. |
 | Lens panels hard to create via API | Legacy `visualization` saved objects with `visState` + `aggs` are more reliable. |
 | Continuous transforms are forward-only | Only process docs in time buckets AFTER the checkpoint. The 24h initial generation seals all past buckets. Injected events must be at exactly `now` (current open bucket) — even 30s in the past can land in a sealed bucket. |
-| Transform `sync.time.delay` is baked in | Set at creation time. Changing the value in code only affects new rules — existing must be deleted and recreated. |
+| Transform `sync.time.delay` is baked in | Set at creation time. Now configurable per rule via `sync_delay` field (default `30s`). Editing delay on an active rule auto-reprovisions. |
+| Transform `time_bucket` is fixed, Kibana's is dynamic | Kibana auto-interval changes based on time range (~30s for 1h view, ~3h for 30d view). The transform needs a fixed interval baked at creation. This sets the floor of resolution — queries can aggregate up (1m→1h) but never finer. |

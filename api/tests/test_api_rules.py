@@ -136,6 +136,44 @@ class TestUpdateRule:
         assert resp.status_code == 200
         mock_backend.deprovision.assert_called_once()
 
+    def test_config_change_on_active_rule_triggers_reprovision(self, test_client):
+        """Changing group_by config on active rule must deprovision+reprovision."""
+        client, mock_backend = test_client
+        create_resp = client.post("/api/rules", json={
+            "name": "active-config-change",
+            "source": {"index_pattern": "app-logs*"},
+            "compute": {"type": "count"},
+            "status": "active",
+        })
+        rule_id = create_resp.json()["id"]
+        mock_backend.provision.reset_mock()
+        mock_backend.deprovision.reset_mock()
+
+        resp = client.put(f"/api/rules/{rule_id}", json={
+            "group_by": {"time_bucket": "5m", "dimensions": [], "sync_delay": "1m"}
+        })
+        assert resp.status_code == 200
+        mock_backend.deprovision.assert_called_once()
+        mock_backend.provision.assert_called_once()
+
+    def test_name_change_on_active_rule_does_not_reprovision(self, test_client):
+        """Changing only name on active rule should NOT trigger reprovision."""
+        client, mock_backend = test_client
+        create_resp = client.post("/api/rules", json={
+            "name": "name-only-change",
+            "source": {"index_pattern": "app-logs*"},
+            "compute": {"type": "count"},
+            "status": "active",
+        })
+        rule_id = create_resp.json()["id"]
+        mock_backend.provision.reset_mock()
+        mock_backend.deprovision.reset_mock()
+
+        resp = client.put(f"/api/rules/{rule_id}", json={"name": "new-name"})
+        assert resp.status_code == 200
+        mock_backend.deprovision.assert_not_called()
+        mock_backend.provision.assert_not_called()
+
     def test_update_nonexistent_returns_404(self, test_client):
         client, _ = test_client
         resp = client.put("/api/rules/9999", json={"name": "nope"})

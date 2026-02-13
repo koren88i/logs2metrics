@@ -50,7 +50,7 @@
   td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #21262d; }
   tr:hover td { background: #1c2128; }
 
-  .side-by-side { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .side-by-side { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
   .side-col h3 { font-size: 0.9rem; color: #58a6ff; margin-bottom: 0.5rem; }
   .side-col .metric-label { color: #3fb950; }
 
@@ -518,11 +518,18 @@ async function loadPanels() {
 
     let panelsHtml = `<div class="stat" style="margin-bottom:0.5rem">Dashboard: <b>${dashboard.title || dashboard.id}</b> — <b>${state.panels.length}</b> panels</div>`;
 
+    const BUCKET_OPTIONS = ['10s', '1m', '5m', '10m', '1h'];
+
     state.panels.forEach((p, idx) => {
       const aggList = (p.agg_types || []).join(', ') || 'none';
       const dims = (p.group_by_fields || []).join(', ') || 'none';
       const metrics = (p.metrics || []).map(m => m.field ? `${m.type}(${m.field})` : m.type).join(', ') || 'none';
       const isRawDocs = p.has_raw_docs;
+      // Pre-select bucket from the panel's date_histogram interval when available.
+      // Falls back to "1m" when the panel uses auto-interval or no date_histogram.
+      const panelInterval = p.date_histogram_interval || null;
+      const bucketDefault = (panelInterval && BUCKET_OPTIONS.includes(panelInterval)) ? panelInterval : '1m';
+      const bucketAutoFilled = panelInterval && BUCKET_OPTIONS.includes(panelInterval);
 
       panelsHtml += `
         <div class="panel-card" id="panelCard${idx}">
@@ -542,19 +549,23 @@ async function loadPanels() {
               <button class="secondary" onclick="previewPanelAgg(${idx})" ${isRawDocs ? 'disabled' : ''}>Preview Agg</button>
               <label style="font-size:0.75rem;color:#8b949e">Lookback<select id="lookback${idx}" style="margin-left:3px">${LOOKBACK_OPTIONS}</select></label>
               <button onclick="analyzePanel(${idx})">Analyze</button>
-              <label style="font-size:0.75rem;color:#8b949e">Bucket<select id="timeBucket${idx}" style="margin-left:3px">
-                <option value="10s">10s</option>
-                <option value="1m" selected>1m</option>
-                <option value="5m">5m</option>
-                <option value="10m">10m</option>
-                <option value="1h">1h</option>
+              <label style="font-size:0.75rem;color:#8b949e" title="${bucketAutoFilled ? 'Auto-filled from panel date_histogram interval (' + panelInterval + '). Change to a larger bucket for fewer metric docs (lower cost) or a smaller bucket for finer resolution.' : 'Panel uses Kibana auto-interval, which changes dynamically based on the time range. The transform needs a fixed interval. This sets the finest resolution available — you can always aggregate up at query time (e.g. 1m metrics viewed at 1h granularity) but cannot go finer. Default 1m suits most operational dashboards.'}">Bucket${bucketAutoFilled ? '*' : ''}<select id="timeBucket${idx}" style="margin-left:3px">
+                ${BUCKET_OPTIONS.map(b => `<option value="${b}" ${b === bucketDefault ? 'selected' : ''}>${b}</option>`).join('')}
               </select></label>
-              <label style="font-size:0.75rem;color:#8b949e">Frequency<select id="frequency${idx}" style="margin-left:3px">
+              <label style="font-size:0.75rem;color:#8b949e">Check Interval<select id="frequency${idx}" style="margin-left:3px" title="How often the transform checks for new data to process">
                 <option value="" selected>auto</option>
                 <option value="1m">1m</option>
                 <option value="5m">5m</option>
                 <option value="15m">15m</option>
                 <option value="1h">1h</option>
+              </select></label>
+              <label style="font-size:0.75rem;color:#8b949e">Late Data Buffer<select id="syncDelay${idx}" style="margin-left:3px" title="How long to wait for late-arriving events before sealing a bucket. Should exceed your worst-case log pipeline delay. Events arriving after this window are silently dropped.">
+                <option value="1s">1s</option>
+                <option value="5s">5s</option>
+                <option value="10s">10s</option>
+                <option value="30s" selected>30s</option>
+                <option value="1m">1m</option>
+                <option value="5m">5m</option>
               </select></label>
               <label style="font-size:0.75rem;display:flex;align-items:center;gap:3px;cursor:pointer"><input type="checkbox" id="skipGuardrails${idx}"> Skip guardrails</label>
               <button class="secondary" onclick="createRuleFromPanel(${idx})" ${isRawDocs ? 'disabled title="Cannot create rule from raw docs panel"' : ''}>Create Rule</button>
@@ -727,11 +738,13 @@ async function createRuleFromPanel(idx) {
 
   const timeBucket = document.getElementById('timeBucket' + idx).value;
   const frequency = document.getElementById('frequency' + idx).value || null;
+  const syncDelay = document.getElementById('syncDelay' + idx).value;
   const skipGuardrails = document.getElementById('skipGuardrails' + idx).checked;
 
   const groupBy = {
     time_bucket: timeBucket,
     dimensions: panel.group_by_fields || [],
+    sync_delay: syncDelay,
   };
   if (frequency) groupBy.frequency = frequency;
 
@@ -947,48 +960,62 @@ async function runComparison(ruleInfo, outputEl) {
       api('POST', '/api/es/search', {index: ruleInfo.metricsIndex, body: metricQuery})
     ]);
 
+    // -- Extract rows from both sides into comparable arrays --
+    // Each row: { tsRaw: number, ts: string, dimStr: string, val: string }
+    const logRowData = [];
     const allBuckets = logResult.aggregations.by_bucket.buckets;
     const logBuckets = allBuckets.filter(b => b.doc_count > 0);
-    let logRows = '';
 
-    // Recursively extract rows from nested dimension aggregations
-    function extractLogRows(bucket, ts, dimValues) {
-      // Check if there's a deeper dimension agg
+    function extractLogRows(bucket, tsRaw, ts, dimValues) {
       const nextDimKey = `by_dim_${dimValues.length}`;
       if (bucket[nextDimKey]) {
         for (const sb of bucket[nextDimKey].buckets) {
-          extractLogRows(sb, ts, [...dimValues, sb.key]);
+          extractLogRows(sb, tsRaw, ts, [...dimValues, sb.key]);
         }
       } else {
-        // Leaf level — extract the metric value
         const val = bucket.metric_val !== undefined ? bucket.metric_val.value : bucket.doc_count;
         const dimStr = dimValues.length > 0 ? dimValues.join(' / ') : '-';
         const fmtVal = val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-';
-        logRows += `<tr><td>${ts}</td><td>${dimStr}</td><td>${fmtVal}</td></tr>`;
+        logRowData.push({ tsRaw, ts, dimStr, val: fmtVal });
       }
     }
 
     for (const b of logBuckets) {
+      const tsRaw = b.key;
       const ts = new Date(b.key_as_string).toLocaleString();
       if (dims.length > 0) {
-        extractLogRows(b, ts, []);
+        extractLogRows(b, tsRaw, ts, []);
       } else {
         const val = b.metric_val !== undefined ? b.metric_val.value : b.doc_count;
         const fmtVal = val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-';
-        logRows += `<tr><td>${ts}</td><td>-</td><td>${fmtVal}</td></tr>`;
+        logRowData.push({ tsRaw, ts, dimStr: '-', val: fmtVal });
       }
     }
 
+    const metricRowData = [];
     const metricHits = metricResult.hits.hits;
-    let metricRows = metricHits.map(h => {
+    for (const h of metricHits) {
       const s = h._source;
+      const tsRaw = new Date(s[timeField]).getTime();
+      const ts = new Date(s[timeField]).toLocaleString();
       const dimStr = dims.length > 0 ? dims.map(d => s[d] || '-').join(' / ') : '-';
       let val = s[metricField];
       if (val === undefined || val === null) val = '-';
       else if (typeof val === 'number') val = val.toFixed(2);
       else if (typeof val === 'object') val = JSON.stringify(val);
-      return `<tr><td>${new Date(s[timeField]).toLocaleString()}</td><td>${dimStr}</td><td>${val}</td></tr>`;
-    }).join('');
+      metricRowData.push({ tsRaw, ts, dimStr, val });
+    }
+
+    // Sort both sides identically: by timestamp, then by dimension string
+    const rowSort = (a, b) => a.tsRaw - b.tsRaw || a.dimStr.localeCompare(b.dimStr);
+    logRowData.sort(rowSort);
+    metricRowData.sort(rowSort);
+
+    const toRows = (data) => data.length > 0
+      ? data.map(r => `<tr><td>${r.ts}</td><td>${r.dimStr}</td><td>${r.val}</td></tr>`).join('')
+      : '<tr><td colspan="3" style="color:#8b949e">No results</td></tr>';
+    const logRows = toRows(logRowData);
+    const metricRows = toRows(metricRowData);
 
     const logTotal = logResult.hits.total.value;
     const metricTotal = metricResult.hits.total.value;
@@ -1006,31 +1033,35 @@ async function runComparison(ruleInfo, outputEl) {
       </div>
       <div class="side-by-side">
         <div class="side-col">
-          <h3>Log Aggregation Query</h3>
+          <h3>Raw Log Aggregation</h3>
           <div class="panel">
-            <div class="panel-label">Query against ${sourceIndex} (${logResult.took}ms)</div>
-            <pre>${syntaxHL(logQuery)}</pre>
+            <div class="panel-label">Index: ${sourceIndex} | Query time: ${logResult.took}ms</div>
+            <pre style="max-height:200px;overflow-y:auto">${syntaxHL(logQuery)}</pre>
           </div>
           <div class="panel" style="margin-top:0.5rem">
-            <div class="panel-label">Results (${logBuckets.length} buckets with data, ${timeBucket} interval)</div>
-            <table>
-              <tr><th>Time Bucket</th><th>${dimLabel}</th><th>${metricLabel}</th></tr>
-              ${logRows || '<tr><td colspan="3" style="color:#8b949e">No results</td></tr>'}
-            </table>
+            <div class="panel-label">${logRowData.length} rows | ${timeBucket} bucket | sorted by time + dimension</div>
+            <div style="max-height:400px;overflow-y:auto">
+              <table>
+                <tr><th>Time Bucket</th><th>${dimLabel}</th><th>${metricLabel}</th></tr>
+                ${logRows}
+              </table>
+            </div>
           </div>
         </div>
         <div class="side-col">
           <h3 class="metric-label">Pre-Computed Metrics</h3>
           <div class="panel">
-            <div class="panel-label">Query against ${ruleInfo.metricsIndex} (${metricResult.took}ms)</div>
-            <pre>${syntaxHL(metricQuery)}</pre>
+            <div class="panel-label">Index: ${ruleInfo.metricsIndex} | Query time: ${metricResult.took}ms</div>
+            <pre style="max-height:200px;overflow-y:auto">${syntaxHL(metricQuery)}</pre>
           </div>
           <div class="panel" style="margin-top:0.5rem">
-            <div class="panel-label">Results (${metricHits.length} pre-aggregated rows)</div>
-            <table>
-              <tr><th>Time Bucket</th><th>${dimLabel}</th><th>${metricLabel}</th></tr>
-              ${metricRows || '<tr><td colspan="3" style="color:#8b949e">No results</td></tr>'}
-            </table>
+            <div class="panel-label">${metricRowData.length} rows | ${timeBucket} bucket | sorted by time + dimension</div>
+            <div style="max-height:400px;overflow-y:auto">
+              <table>
+                <tr><th>Time Bucket</th><th>${dimLabel}</th><th>${metricLabel}</th></tr>
+                ${metricRows}
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -1183,7 +1214,8 @@ async function loadAllRules() {
               <div class="mgr-rule-meta">
                 <span>Compute: <b>${computeDesc}</b></span>
                 <span>Bucket: <b>${rule.group_by.time_bucket}</b></span>
-                <span>Frequency: <b>${rule.group_by.frequency || 'auto'}</b></span>
+                <span>Check Interval: <b>${rule.group_by.frequency || 'auto'}</b></span>
+                <span>Late Data Buffer: <b>${rule.group_by.sync_delay || '30s'}</b></span>
                 <span>Dims: <b>${dims}</b></span><br>
                 <span>Source: <b>${rule.source.index_pattern}</b></span>
                 <span>Filter: <b>${filter}</b></span>
@@ -1471,7 +1503,9 @@ async function mgrEditRule(ruleId) {
     const computeTypes = ['count', 'sum', 'avg', 'distribution'];
     const timeBuckets = ['10s', '1m', '5m', '10m', '1h'];
     const frequencies = ['', '1m', '5m', '15m', '1h'];
+    const delays = ['1s', '5s', '10s', '30s', '1m', '5m'];
     const curFreq = rule.group_by.frequency || '';
+    const curDelay = rule.group_by.sync_delay || '30s';
 
     expandEl.innerHTML = `
       <div class="edit-form">
@@ -1481,9 +1515,13 @@ async function mgrEditRule(ruleId) {
         <select id="editBucket${ruleId}">
           ${timeBuckets.map(b => `<option value="${b}" ${b === rule.group_by.time_bucket ? 'selected' : ''}>${b}</option>`).join('')}
         </select>
-        <label>Frequency</label>
+        <label>Check Interval <span style="font-weight:normal;color:#8b949e;font-size:0.8em">— how often the transform runs</span></label>
         <select id="editFreq${ruleId}">
           ${frequencies.map(f => `<option value="${f}" ${f === curFreq ? 'selected' : ''}>${f || 'auto'}</option>`).join('')}
+        </select>
+        <label>Late Data Buffer <span style="font-weight:normal;color:#8b949e;font-size:0.8em">— wait time for late events; exceed your worst-case pipeline delay</span></label>
+        <select id="editDelay${ruleId}">
+          ${delays.map(d => `<option value="${d}" ${d === curDelay ? 'selected' : ''}>${d}</option>`).join('')}
         </select>
         <label>Dimensions</label>
         <input type="text" id="editDims${ruleId}" value="${(rule.group_by.dimensions || []).join(', ')}" placeholder="comma-separated fields">
@@ -1536,7 +1574,8 @@ async function mgrSaveEdit(ruleId, originalStatus) {
   if (computeType !== 'count') compute.field = computeField;
   if (computeType === 'distribution') compute.percentiles = [50, 75, 90, 95, 99];
 
-  const groupBy = { time_bucket: timeBucket, dimensions: dims };
+  const syncDelay = document.getElementById('editDelay' + ruleId).value;
+  const groupBy = { time_bucket: timeBucket, dimensions: dims, sync_delay: syncDelay };
   if (frequency) groupBy.frequency = frequency;
 
   const expandEl = document.getElementById('mgrExpand' + ruleId);

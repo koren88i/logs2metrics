@@ -121,6 +121,31 @@ class TestBuildTransformBody:
         body = backend._build_transform_body(rule)
         assert body["frequency"] == "15m"
 
+    def test_default_sync_delay_is_30s(self, make_log_metric_rule):
+        from elastic_backend import ElasticMetricsBackend
+        backend = ElasticMetricsBackend()
+        rule = make_log_metric_rule()
+        body = backend._build_transform_body(rule)
+        assert body["sync"]["time"]["delay"] == "30s"
+
+    def test_custom_sync_delay(self, make_log_metric_rule):
+        from elastic_backend import ElasticMetricsBackend
+        backend = ElasticMetricsBackend()
+        rule = make_log_metric_rule(
+            group_by={"time_bucket": "1m", "dimensions": [], "frequency": None, "sync_delay": "5m"}
+        )
+        body = backend._build_transform_body(rule)
+        assert body["sync"]["time"]["delay"] == "5m"
+
+    def test_explicit_1s_sync_delay(self, make_log_metric_rule):
+        from elastic_backend import ElasticMetricsBackend
+        backend = ElasticMetricsBackend()
+        rule = make_log_metric_rule(
+            group_by={"time_bucket": "1m", "dimensions": [], "frequency": None, "sync_delay": "1s"}
+        )
+        body = backend._build_transform_body(rule)
+        assert body["sync"]["time"]["delay"] == "1s"
+
     def test_no_reserved_fields_in_transform_aggs(self, make_log_metric_rule):
         """Comprehensive: no reserved field name in any aggregation keys."""
         from elastic_backend import ElasticMetricsBackend

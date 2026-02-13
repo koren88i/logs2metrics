@@ -97,6 +97,83 @@ class TestCloneAndRewireVisualization:
         assert group_agg["type"] == "terms"
 
 
+class TestDateHistogramIntervalExtraction:
+    """Verify _parse_visualization extracts date_histogram interval."""
+
+    def _make_vis_response(self, interval_key=None, interval_value=None):
+        """Build a mock Kibana saved-object response for a visualization."""
+        params = {"field": "timestamp"}
+        if interval_key:
+            params[interval_key] = interval_value
+        aggs = [
+            {"type": "count", "schema": "metric", "params": {}},
+            {"type": "date_histogram", "schema": "segment", "params": params},
+        ]
+        return {
+            "attributes": {
+                "visState": json.dumps({"type": "line", "aggs": aggs}),
+                "title": "Test",
+                "kibanaSavedObjectMeta": {
+                    "searchSourceJSON": json.dumps({
+                        "query": {"query": "", "language": "kuery"}, "filter": [],
+                    })
+                },
+            },
+            "references": [],
+        }
+
+    def _parse(self, vis_response):
+        from kibana_connector import _parse_visualization
+        mock_response = MagicMock()
+        mock_response.json.return_value = vis_response
+        mock_response.raise_for_status.return_value = None
+        with patch("kibana_connector._get_client_and_url") as mock_get:
+            mock_client = MagicMock()
+            mock_client.get.return_value = mock_response
+            mock_get.return_value = (mock_client, "http://kibana:5601")
+            return _parse_visualization("p1", "Test", "vis-1")
+
+    def test_fixed_interval_extracted(self):
+        result = self._parse(self._make_vis_response("fixed_interval", "5m"))
+        assert result.date_histogram_interval == "5m"
+
+    def test_calendar_interval_extracted(self):
+        result = self._parse(self._make_vis_response("calendar_interval", "1M"))
+        assert result.date_histogram_interval == "1M"
+
+    def test_legacy_interval_extracted(self):
+        result = self._parse(self._make_vis_response("interval", "1h"))
+        assert result.date_histogram_interval == "1h"
+
+    def test_auto_interval_gives_none(self):
+        result = self._parse(self._make_vis_response("interval", "auto"))
+        assert result.date_histogram_interval is None
+
+    def test_no_interval_gives_none(self):
+        result = self._parse(self._make_vis_response())
+        assert result.date_histogram_interval is None
+
+    def test_no_date_histogram_gives_none(self):
+        aggs = [
+            {"type": "count", "schema": "metric", "params": {}},
+            {"type": "terms", "schema": "group", "params": {"field": "service"}},
+        ]
+        vis_response = {
+            "attributes": {
+                "visState": json.dumps({"type": "line", "aggs": aggs}),
+                "title": "Test",
+                "kibanaSavedObjectMeta": {
+                    "searchSourceJSON": json.dumps({
+                        "query": {"query": "", "language": "kuery"}, "filter": [],
+                    })
+                },
+            },
+            "references": [],
+        }
+        result = self._parse(vis_response)
+        assert result.date_histogram_interval is None
+
+
 class TestAddRulePanelIncludesDataViewInBatch:
     """Bug 4 prevention: verify data view is in the NDJSON batch."""
 

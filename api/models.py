@@ -48,8 +48,16 @@ class GroupByConfig(BaseModel):
     )
     frequency: Optional[str] = Field(
         default=None,
-        description="Transform check interval (e.g. '1m', '5m', '15m'). Defaults to max(time_bucket, 1m) if not set.",
+        description="Check interval: how often the transform checks for new data (e.g. '1m', '5m'). "
+                    "Defaults to max(time_bucket, 1m) if not set.",
         examples=["1m", "5m", "15m", "1h"],
+    )
+    sync_delay: str = Field(
+        default="30s",
+        description="Late data buffer: how long to wait for late-arriving events before sealing a time bucket. "
+                    "Should exceed your worst-case log pipeline delay. Events arriving after this window "
+                    "are silently dropped.",
+        examples=["1s", "5s", "10s", "30s", "1m", "5m"],
     )
 
 

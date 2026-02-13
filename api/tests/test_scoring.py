@@ -136,10 +136,45 @@ class TestScoreLookback:
 
 
 class TestScoreAutoRefresh:
-    def test_enabled_gives_10(self, make_panel_analysis):
+    def test_5s_gives_10(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=5000)
+        assert _get_signal(result, "auto_refresh").points == 10
+
+    def test_10s_gives_10(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=10000)
+        assert _get_signal(result, "auto_refresh").points == 10
+
+    def test_15s_gives_8(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=15000)
+        assert _get_signal(result, "auto_refresh").points == 8
+
+    def test_30s_gives_8(self, make_panel_analysis):
         from scoring import score_panel
         result = score_panel(make_panel_analysis(), refresh_interval_ms=30000)
-        assert _get_signal(result, "auto_refresh").points == 10
+        assert _get_signal(result, "auto_refresh").points == 8
+
+    def test_1m_gives_6(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=60000)
+        assert _get_signal(result, "auto_refresh").points == 6
+
+    def test_5m_gives_4(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=300000)
+        assert _get_signal(result, "auto_refresh").points == 4
+
+    def test_30m_gives_2(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=1800000)
+        assert _get_signal(result, "auto_refresh").points == 2
+
+    def test_1h_gives_1(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=3600000)
+        assert _get_signal(result, "auto_refresh").points == 1
 
     def test_disabled_gives_0(self, make_panel_analysis):
         from scoring import score_panel
@@ -150,6 +185,23 @@ class TestScoreAutoRefresh:
         from scoring import score_panel
         result = score_panel(make_panel_analysis(), refresh_interval_ms=0)
         assert _get_signal(result, "auto_refresh").points == 0
+
+    def test_boundary_11s_gives_8(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=11000)
+        assert _get_signal(result, "auto_refresh").points == 8
+
+    def test_explanation_includes_interval(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=30000)
+        signal = _get_signal(result, "auto_refresh")
+        assert "30s" in signal.explanation
+
+    def test_explanation_for_minutes(self, make_panel_analysis):
+        from scoring import score_panel
+        result = score_panel(make_panel_analysis(), refresh_interval_ms=300000)
+        signal = _get_signal(result, "auto_refresh")
+        assert "5m" in signal.explanation
 
 
 class TestMaxScore:
@@ -165,7 +217,7 @@ class TestMaxScore:
         ft = make_field_mapping({"service": "keyword"})
         result = score_panel(
             panel, field_types=ft,
-            dashboard_time_from="now-30d", refresh_interval_ms=30000,
+            dashboard_time_from="now-30d", refresh_interval_ms=10000,
         )
         assert result.total == 95
         assert result.max_total == 95
@@ -195,6 +247,6 @@ class TestRecommendation:
         ft = make_field_mapping({"service": "keyword"})
         result = score_panel(
             panel, field_types=ft,
-            dashboard_time_from="now-30d", refresh_interval_ms=30000,
+            dashboard_time_from="now-30d", refresh_interval_ms=10000,
         )
         assert "Strong candidate" in result.recommendation_text

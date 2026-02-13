@@ -283,18 +283,7 @@ def _score_lookback(
 def _score_auto_refresh(
     refresh_interval_ms: int | None, out: list[ScoreBreakdown]
 ) -> None:
-    if refresh_interval_ms is not None and refresh_interval_ms > 0:
-        secs = refresh_interval_ms // 1000
-        out.append(
-            ScoreBreakdown(
-                signal="auto_refresh",
-                points=10,
-                max_points=10,
-                explanation=f"Auto-refresh enabled (every {secs}s) — "
-                "repeated queries benefit from pre-aggregation.",
-            )
-        )
-    else:
+    if refresh_interval_ms is None or refresh_interval_ms <= 0:
         out.append(
             ScoreBreakdown(
                 signal="auto_refresh",
@@ -303,6 +292,48 @@ def _score_auto_refresh(
                 explanation="Auto-refresh not enabled or not detected.",
             )
         )
+        return
+
+    secs = refresh_interval_ms / 1000
+
+    # Graduated scale: more frequent refresh = more benefit from pre-computation
+    if secs <= 10:
+        points = 10
+    elif secs <= 30:
+        points = 8
+    elif secs <= 60:
+        points = 6
+    elif secs <= 300:
+        points = 4
+    elif secs <= 1800:
+        points = 2
+    else:
+        points = 1
+
+    if secs < 60:
+        interval_text = f"{secs:.0f}s"
+    elif secs < 3600:
+        interval_text = f"{secs / 60:.0f}m"
+    else:
+        interval_text = f"{secs / 3600:.1f}h"
+
+    if points >= 8:
+        freq_word, benefit_word = "frequent", "strongly"
+    elif points >= 4:
+        freq_word, benefit_word = "moderate", "moderately"
+    else:
+        freq_word, benefit_word = "infrequent", "marginally"
+
+    out.append(
+        ScoreBreakdown(
+            signal="auto_refresh",
+            points=points,
+            max_points=10,
+            explanation=f"Auto-refresh every {interval_text} — "
+            f"{freq_word} refresh benefits {benefit_word} "
+            "from pre-aggregation.",
+        )
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

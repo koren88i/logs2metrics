@@ -211,10 +211,11 @@ All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-
 | DELETE | `/api/metrics-dashboard/panels/{rule_id}` | Remove panel from dashboard + delete visualization & data view |
 | DELETE | `/api/metrics-dashboard` | Delete entire metrics dashboard + all associated visualizations & data views |
 
-### Server Config
+### Server Config + Health
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/config` | Server-side config (default KIBANA_URL) for UI pre-population |
+| GET | `/api/health` | Health monitor status: last check time, check interval, rules in error |
 
 ### Portal UI + Proxies
 | Method | Path | Description |
@@ -368,9 +369,10 @@ LogMetricRule
     time_field: string          # default "timestamp"
     filter_query: dict?         # optional ES query DSL
   group_by:
-    time_bucket: string         # e.g. "1m", "5m"
+    time_bucket: string         # Fixed interval for the transform's date_histogram (e.g. "1m", "5m"). Sets the floor of resolution — can aggregate up at query time but not finer. Auto-filled from panel interval when available; defaults to "1m" for auto-interval panels.
     dimensions: string[]        # e.g. ["service", "endpoint"]
-    frequency: string?          # transform check interval, e.g. "1m", "5m", "15m"; defaults to max(time_bucket, 1m)
+    frequency: string?          # Check Interval — how often the transform checks for new data; defaults to max(time_bucket, 1m)
+    sync_delay: string           # Late Data Buffer — wait time for late-arriving events before sealing a bucket; default "30s"
   compute:
     type: count|sum|avg|distribution
     field: string?              # required for sum/avg/distribution
