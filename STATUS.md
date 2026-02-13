@@ -225,6 +225,17 @@ python seed.py --kibana http://localhost:5602
 - **Metrics dashboard deletion**: New `DELETE /api/metrics-dashboard` endpoint that nukes the entire metrics dashboard and all associated visualizations and data views. "Delete Dashboard" button in the Metrics Dashboard section of the Rules Manager. Handles orphaned panels (rules deleted before panels were removed).
 - **`_delete_saved_object()` helper** in `kibana_connector.py`: Generic DELETE for Kibana saved objects by type and ID. Used by both panel removal and dashboard deletion.
 
+### Test Suite [DONE]
+
+- **135 unit/integration tests across 12 files** — all passing, no Docker required
+- Created from scratch: `pytest.ini`, `requirements-test.txt`, `api/tests/` with `conftest.py` + 11 test files
+- **Regression tests for all 7 post-Phase-7 bugs**: innerHTML += (Bug 1), auth parity (Bug 3), NDJSON batch (Bug 4), reserved field names (Bug 5), raw fetch (Bug 6), zero-match status (Bug 7)
+- Covers: Pydantic model validation, scoring engine, cost estimator, guardrails, elastic backend (transform body + field naming), Kibana connector (vis cloning + NDJSON format), FastAPI CRUD endpoints, backend status, service map auth parity, static analysis anti-pattern checks
+- **Mocking strategy**: In-memory SQLite with StaticPool, patched ES client/connector, mocked metrics backend, FastAPI TestClient with dependency overrides
+- **Fixed Bug 1 regression in `loadPanels()`**: `container.innerHTML +=` inside `forEach` loop (same anti-pattern as the Rules Manager bug) — replaced with string accumulation + single `innerHTML =` assignment
+- Run: `python -m pytest -v` from repo root
+- See `CLAUDE.md` for test file listing and bug-to-test mapping
+
 ---
 
 ## All Phases Complete

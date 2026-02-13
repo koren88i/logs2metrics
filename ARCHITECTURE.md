@@ -103,6 +103,9 @@ logs2metrics/
   PLAN.md                     # Phased implementation plan
   STATUS.md                   # Current state & handoff notes
   ARCHITECTURE.md             # This file
+  CLAUDE.md                   # Project memory: bug catalog, coding/design standards, test suite docs
+  pytest.ini                  # Test config: testpaths, pythonpath, markers
+  requirements-test.txt       # Test deps: pytest, pytest-cov, httpx
   log-generator/
     Dockerfile
     requirements.txt
@@ -127,6 +130,19 @@ logs2metrics/
     backend.py                # Abstract MetricsBackend interface + response models
     elastic_backend.py        # ES transform provisioning (ILM, index, transform lifecycle)
     debug_ui.html             # Portal UI: Pipeline (5-step walkthrough) + Rules Manager (served at GET /debug)
+    tests/
+      conftest.py             # Shared fixtures: factories, mocks, FastAPI TestClient with in-memory SQLite
+      test_models.py          # Pydantic model validation tests
+      test_scoring.py         # Scoring engine tests (all 6 signals)
+      test_cost_estimator.py  # Cost math + series count tests
+      test_guardrails.py      # Guardrail check tests
+      test_elastic_backend.py # Transform body + field naming (Bug 5) tests
+      test_kibana_connector.py # Vis cloning + NDJSON batch (Bug 4) tests
+      test_api_rules.py       # CRUD endpoint tests
+      test_api_status.py      # Backend status + zero-doc (Bug 7) tests
+      test_api_errors.py      # Health + provision failure tests
+      test_service_map.py     # Auth parity (Bug 3) + auto-fill tests
+      test_static_analysis.py # Anti-pattern checks (Bugs 1, 5, 6)
 ```
 
 ---

@@ -163,12 +163,32 @@ Logs2Metrics is a platform service that derives metrics from existing Elasticsea
 
 ---
 
-## Test Strategy (Recommended)
+## Test Suite
 
-When adding tests to this project, prioritize:
+**135 tests across 12 files**, all passing. Run with `python -m pytest -v` from the repo root. No Docker required — all external dependencies are mocked.
 
-1. **End-to-end data correctness tests** — Create rule, wait for transform, query metrics index, assert actual numeric values match expected.
-2. **Multi-item UI tests** — Render 3+ rules/panels, verify all are interactive (not just the last one).
-3. **Multi-configuration integration tests** — Run against both default and security-enabled Kibana.
-4. **Edge case tests** — Zero-match filters, missing indices, race conditions between provisioning and querying.
-5. **Static analysis** — Lint rule or grep check to ensure no raw `fetch()` calls bypass the `api()` wrapper.
+```
+pytest.ini                              # Config: testpaths, pythonpath, markers
+requirements-test.txt                   # pytest + pytest-cov + httpx
+api/tests/
+  conftest.py                           # Shared fixtures: factories, mocks, TestClient
+  test_models.py                        # 19 tests — Pydantic validation (SourceConfig, GroupBy, Compute, etc.)
+  test_scoring.py                       # 22 tests — All 6 scoring signals + max score + recommendations
+  test_cost_estimator.py                # 12 tests — Cost math, series count, cardinality fallback, bucket parsing
+  test_guardrails.py                    # 11 tests — dimension_limit, cardinality, high_cardinality_fields, net_savings
+  test_elastic_backend.py               # 16 tests — Transform body, field naming (Bug 5), status, frequency logic
+  test_kibana_connector.py              #  9 tests — Vis cloning, NDJSON batch with data view (Bug 4), format
+  test_api_rules.py                     # 14 tests — CRUD endpoints (create, list, get, update, delete)
+  test_api_status.py                    #  4 tests — Backend status, zero-doc handling (Bug 7)
+  test_api_errors.py                    #  3 tests — Health, provision failure, estimate endpoint
+  test_service_map.py                   #  7 tests — Auth parity (Bug 3), auto-fill, override
+  test_static_analysis.py               #  4 tests — No raw fetch (Bug 6), no doc_count (Bug 5), no innerHTML+= in loops (Bug 1)
+```
+
+**Bug-to-test mapping**: Each of the 7 post-Phase-7 bugs has at least one regression test. See the plan file for the full mapping table.
+
+**What's NOT covered yet** (future work):
+1. **End-to-end data correctness tests** — Create rule, wait for transform, query metrics index, assert actual numeric values. Requires Docker stack.
+2. **Multi-item UI tests** — Render 3+ rules/panels in a browser, verify all are interactive. Requires Playwright or similar.
+3. **Multi-configuration integration tests** — Run against both default and security-enabled Kibana. Requires Docker stack.
+4. **Edge case tests with real ES** — Zero-match filters, missing indices, race conditions between provisioning and querying.
