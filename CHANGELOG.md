@@ -5,6 +5,41 @@
 
 ---
 
+## Original Plan Phases (Specs)
+
+### Phase 1 Spec: Local Dev Environment + Synthetic Logs
+- Docker Compose: ES + Kibana (single-node, dev mode)
+- On-demand log generator FastAPI service with UI
+- Log shape: `timestamp`, `service`, `status_code`, `endpoint`, `response_time_ms`, `tenant`, `level`
+- Seed 2-3 Kibana dashboards with varying suitability panels
+
+### Phase 2 Spec: Core Domain Model + REST API (CRUD)
+- Python + FastAPI, `LogMetricRule` Pydantic model, SQLite via SQLModel
+- Full CRUD: POST/GET/PUT/DELETE on `/api/rules`
+
+### Phase 3 Spec: ES & Kibana Read-Only Connectors
+- ES: list_indices, get_mapping, get_field_cardinality, get_index_stats
+- Kibana: list_dashboards, get_dashboard, parse_panels → `PanelAnalysis`
+
+### Phase 4 Spec: Suitability Scoring + Candidate Analysis
+- 6 scoring signals: date_histogram (+25), numeric aggs (+20), no raw docs (+15), aggregatable dims (+10), lookback (+15), auto-refresh (+10)
+- `POST /api/analyze/dashboard/{id}` endpoint
+
+### Phase 5 Spec: Cost Estimation + Guardrails
+- Log vs metric storage comparison, series count estimation
+- 4 guardrails: dimension_limit, cardinality < 100K, high_cardinality_fields block, net_savings > 0
+
+### Phase 6 Spec: Elastic Metrics Backend
+- Abstract `MetricsBackend` interface
+- `ElasticMetricsBackend`: ILM → index → transform → start lifecycle
+- Status transitions: draft→active = provision, active→draft = deprovision
+
+### Phase 7 Spec: Portal UI
+- Originally planned as React + Vite; implemented as enhanced `debug_ui.html` (no separate SPA needed)
+- Dashboard list, analysis table, rule creation wizard, rules management
+
+---
+
 ## Completed Phases
 
 ### Phase 1: Local Dev Environment + Synthetic Logs
@@ -133,41 +168,6 @@
 7. **Swallowed errors** — silent 400 responses masked real failures.
 
 These gaps were partially addressed by the test suite (135 tests across 12 files) added post-Phase 7, including regression tests for all 7 bugs and static analysis anti-pattern checks.
-
----
-
-## Original Plan Phases (Specs)
-
-### Phase 1 Spec: Local Dev Environment + Synthetic Logs
-- Docker Compose: ES + Kibana (single-node, dev mode)
-- On-demand log generator FastAPI service with UI
-- Log shape: `timestamp`, `service`, `status_code`, `endpoint`, `response_time_ms`, `tenant`, `level`
-- Seed 2-3 Kibana dashboards with varying suitability panels
-
-### Phase 2 Spec: Core Domain Model + REST API (CRUD)
-- Python + FastAPI, `LogMetricRule` Pydantic model, SQLite via SQLModel
-- Full CRUD: POST/GET/PUT/DELETE on `/api/rules`
-
-### Phase 3 Spec: ES & Kibana Read-Only Connectors
-- ES: list_indices, get_mapping, get_field_cardinality, get_index_stats
-- Kibana: list_dashboards, get_dashboard, parse_panels → `PanelAnalysis`
-
-### Phase 4 Spec: Suitability Scoring + Candidate Analysis
-- 6 scoring signals: date_histogram (+25), numeric aggs (+20), no raw docs (+15), aggregatable dims (+10), lookback (+15), auto-refresh (+10)
-- `POST /api/analyze/dashboard/{id}` endpoint
-
-### Phase 5 Spec: Cost Estimation + Guardrails
-- Log vs metric storage comparison, series count estimation
-- 4 guardrails: dimension_limit, cardinality < 100K, high_cardinality_fields block, net_savings > 0
-
-### Phase 6 Spec: Elastic Metrics Backend
-- Abstract `MetricsBackend` interface
-- `ElasticMetricsBackend`: ILM → index → transform → start lifecycle
-- Status transitions: draft→active = provision, active→draft = deprovision
-
-### Phase 7 Spec: Portal UI
-- Originally planned as React + Vite; implemented as enhanced `debug_ui.html` (no separate SPA needed)
-- Dashboard list, analysis table, rule creation wizard, rules management
 
 ---
 
