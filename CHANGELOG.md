@@ -11,11 +11,13 @@
   - Per-rule metrics: `l2m_rule_{name}_{value_field}` with dimension labels
   - Transform health metrics: `l2m_transform_health`, `l2m_transform_docs_processed`, `l2m_transform_docs_indexed`
   - Scrape-time collection (queries ES on each scrape, no background threads)
-  - 60-second scrape interval, 5-minute ES query lookback window
+  - 60-second scrape interval, 24-hour ES query lookback window
   - Deduplicates by dimension combination (keeps latest value)
+  - Clears all gauge label sets between scrapes to prevent stale label combinations from deleted/recreated rules
 - **Feature**: Added Grafana with auto-provisioned dashboard
-  - Panels: Transform health (stat), docs processed/indexed (time series), per-rule metrics (auto-discovered)
-  - Prometheus datasource pre-configured
+  - Panels: Transform health (stat), docs processed/indexed (stat), per-rule metrics (repeating timeseries)
+  - Grafana monitoring link in Rules Manager tab (opens directly to dashboard)
+  - Prometheus datasource pre-configured, instance/job labels dropped via metric_relabel
   - Access: http://localhost:3001 (admin/admin)
 - **Stack**: Added Prometheus (port 9091) and Grafana (port 3001) to Docker Compose
 - **Deps**: Added `prometheus-client==0.21.0`
