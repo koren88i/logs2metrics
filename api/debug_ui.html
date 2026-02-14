@@ -240,6 +240,15 @@
     <h2>Rules Manager</h2>
     <button class="secondary" onclick="loadAllRules()">Refresh</button>
   </div>
+  <!-- Grafana monitoring link -->
+  <div class="mgr-rule-card" style="border-left:3px solid #a371f7;margin-bottom:1rem;padding:0.6rem 1rem">
+    <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+      <span style="font-weight:600;color:#a371f7">Monitoring</span>
+      <span style="color:#8b949e;font-size:0.85rem">Active rules export metrics to Prometheus automatically.</span>
+      <a href="http://localhost:3001" target="_blank" rel="noopener"
+         style="color:#a371f7;font-size:0.85rem;text-decoration:none;border:1px solid #a371f7;border-radius:4px;padding:0.2rem 0.6rem">Open Grafana</a>
+    </div>
+  </div>
   <!-- Metrics Dashboard section -->
   <div id="metricsDashboardSection" class="mgr-rule-card" style="border-left:3px solid #58a6ff;margin-bottom:1rem">
     <div id="metricsDashboardContent">
