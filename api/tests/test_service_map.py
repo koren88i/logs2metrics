@@ -30,7 +30,6 @@ class TestServiceMapAuthParity:
     def test_all_entries_have_required_keys(self):
         from main import _KIBANA_SERVICE_MAP
         for url, svc in _KIBANA_SERVICE_MAP.items():
-            assert "log_generator" in svc, f"Entry '{url}' missing log_generator"
             assert "es_url" in svc, f"Entry '{url}' missing es_url"
 
 

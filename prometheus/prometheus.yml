@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 60s
+  evaluation_interval: 60s
+
+scrape_configs:
+  - job_name: logs2metrics
+    static_configs:
+      - targets: ['api:8000']
+    scrape_timeout: 30s

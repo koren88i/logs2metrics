@@ -51,7 +51,8 @@ Swagger API docs: **http://localhost:8091/docs**
 | Elasticsearch 8.12 | 9201 | Log storage + metrics indices |
 | Kibana 8.12 | 5602 | Dashboard visualization |
 | API (FastAPI) | 8091 | Control plane + portal UI |
-| Log Generator (FastAPI) | 8090 | Synthetic log data |
+| Prometheus | 9090 | Metrics scraping + storage |
+| Grafana | 3000 | Metrics dashboards (admin/admin) |
 
 All services run via Docker Compose. Data is stored in SQLite (rules) and Elasticsearch (logs + metrics).
 
@@ -95,6 +96,7 @@ Each rule has two timing settings that control the underlying ES continuous tran
 | `POST` | `/api/metrics-dashboard/panels/{rule_id}` | Add rule panel to metrics dashboard |
 | `GET` | `/api/kibana/dashboards` | List Kibana dashboards |
 | `GET` | `/api/health` | Health monitor status + rules in error |
+| `GET` | `/metrics` | Prometheus scrape endpoint (per-rule metrics + transform health) |
 | `GET` | `/api/kibana/test-connection` | Test Kibana connectivity |
 
 All Kibana-related endpoints accept `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass` headers for multi-instance support.
@@ -110,11 +112,20 @@ The self-service portal at `/debug` has two tabs:
 
 Connect to any Kibana instance (with optional auth) directly from the portal header.
 
+## Monitoring (Prometheus + Grafana)
+
+Pre-computed metrics from ES are automatically exported to Prometheus via the `/metrics` endpoint. Grafana ships with a pre-built dashboard.
+
+- **Prometheus UI**: http://localhost:9090 — query `l2m_rule_*` or `l2m_transform_*` metrics
+- **Grafana**: http://localhost:3000 (admin/admin) — "Logs2Metrics" dashboard auto-provisioned
+- **Scrape interval**: 60 seconds
+- **Metric naming**: `l2m_rule_{rule_name}_{value_field}{dimension_labels}`
+
 ## Tests
 
 ```bash
 pip install -r requirements-test.txt -r api/requirements.txt
-python -m pytest -v    # 167 tests, no Docker required
+python -m pytest -v    # 195 tests, no Docker required
 ```
 
 All external dependencies (ES, Kibana) are mocked. Tests cover model validation, scoring engine, cost estimator, guardrails, transform provisioning, API endpoints, and static analysis checks.
@@ -123,18 +134,20 @@ All external dependencies (ES, Kibana) are mocked. Tests cover model validation,
 
 ```
 logs2metrics/
-  docker-compose.yml        # ES + Kibana + Log Generator + API
+  docker-compose.yml        # ES + Kibana + API + Prometheus + Grafana
   api/
     main.py                 # FastAPI endpoints + proxy routing
     models.py               # Domain models (LogMetricRule)
     elastic_backend.py      # ES transform provisioning
+    prometheus_exporter.py  # Prometheus metrics export from ES indices
     kibana_connector.py     # Kibana read/write operations
     scoring.py              # Panel suitability scoring
     guardrails.py           # Pre-creation validation
     cost_estimator.py       # Storage cost comparison
     debug_ui.html           # Portal UI (self-contained)
-    tests/                  # 167 unit/integration tests
-  log-generator/            # Synthetic log data service
+    tests/                  # 195 unit/integration tests
+  prometheus/               # Prometheus scrape config
+  grafana/                  # Grafana provisioning + dashboards
   seed-dashboards/          # Kibana dashboard seeder
 ```
 

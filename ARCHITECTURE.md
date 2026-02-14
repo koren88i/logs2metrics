@@ -54,16 +54,9 @@ Portal UI: `http://localhost:8091/debug` | Swagger: `http://localhost:8091/docs`
 |---------|---------------|-----------|----------------|
 | Elasticsearch 8.12 | `docker.elastic.co/elasticsearch/elasticsearch:8.12.0` | 9201 | 9200 |
 | Kibana 8.12 | `docker.elastic.co/kibana/kibana:8.12.0` | 5602 | 5601 |
-| Log Generator | `./log-generator` (FastAPI) | 8090 | 8000 |
 | API | `./api` (FastAPI) | 8091 | 8000 |
-
-### Log Generator (`log-generator/`)
-- FastAPI service with inline HTML UI
-- `POST /generate { count }` — creates a batch of structured logs (random, spread across last 24h)
-- `POST /generate-recent { count }` — creates logs with timestamps at exactly `now` (for live injection after transforms are running; all events land in the current open bucket so the transform picks them up)
-- `POST /generate-toy` — creates a predictable toy dataset: 10 identical logs (auth-service, /api/login, acme-corp, status 200, 42ms) within a single 1-minute window, for verifiable end-to-end testing
-- `DELETE /logs` — deletes all documents from the log index
-- `GET /status` — last batch result
+| Prometheus | `prom/prometheus:v2.51.0` | 9090 | 9090 |
+| Grafana | `grafana/grafana:10.4.0` | 3000 | 3000 |
 
 ### Seed Dashboards (`seed-dashboards/`)
 - Python script using Kibana saved objects NDJSON import API
@@ -107,7 +100,31 @@ Portal UI: `http://localhost:8091/debug` | Swagger: `http://localhost:8091/docs`
 
 5. QUERY (user benefit)
    Dashboard query --> hits metrics index (fast) instead of log index (slow)
+
+6. EXPORT TO PROMETHEUS (automated)
+   ES metrics indices --> /metrics endpoint --> Prometheus scrape --> Grafana dashboards
 ```
+
+### Prometheus Metrics Export
+
+The API exposes a `GET /metrics` endpoint in Prometheus text format. Prometheus scrapes it every 60 seconds.
+
+**Per-rule metrics** (one gauge per active rule):
+```
+l2m_rule_{sanitized_name}_{value_field}{dimension_labels} value
+```
+- Name sanitization: lowercase, `[^a-zA-Z0-9_]` → `_`, collapse runs, strip edges
+- Value field depends on compute type: `event_count`, `sum_{field}`, `avg_{field}`, `p50_{field}`, `p95_{field}`, etc.
+- Dimensions become Prometheus labels (e.g. `{service="auth", endpoint="/login"}`)
+- Deduplicates by dimension combination, keeping the latest value from the last 5 minutes
+
+**Transform health metrics** (always present for active rules):
+```
+l2m_transform_health{rule_id="1", rule_name="error-rate"} 1
+l2m_transform_docs_processed{rule_id="1", rule_name="error-rate"} 15234
+l2m_transform_docs_indexed{rule_id="1", rule_name="error-rate"} 1523
+```
+Health values: 0=unknown, 1=green, 2=yellow, 3=red, 4=stopped
 
 ---
 
@@ -115,17 +132,13 @@ Portal UI: `http://localhost:8091/debug` | Swagger: `http://localhost:8091/docs`
 
 ```
 logs2metrics/
-  docker-compose.yml          # ES + Kibana + log-generator + api
+  docker-compose.yml          # ES + Kibana + API + Prometheus + Grafana
   README.md                   # GitHub landing page: overview, quick start, API table
   CLAUDE.md                   # Coding standards & quick reference (auto-loaded by Claude Code)
   ARCHITECTURE.md             # This file — technical reference
   CHANGELOG.md                # Project history: completed phases, bug post-mortems
   pytest.ini                  # Test config: testpaths, pythonpath, markers
   requirements-test.txt       # Test deps: pytest, pytest-cov, httpx
-  log-generator/
-    Dockerfile
-    requirements.txt
-    main.py                   # FastAPI + inline HTML UI
   seed-dashboards/
     requirements.txt
     seed.py                   # Kibana data view + dashboard seeder
@@ -133,6 +146,7 @@ logs2metrics/
     Dockerfile
     requirements.txt
     main.py                   # FastAPI CRUD + connector + analysis endpoints
+    log_generator.py          # Synthetic log generation (runs inline, uses caller's ES client)
     models.py                 # LogMetricRule SQLModel + Pydantic schemas
     database.py               # SQLite engine + session
     config.py                 # ES_URL, KIBANA_URL from env vars
@@ -145,6 +159,7 @@ logs2metrics/
     guardrails.py             # Pre-creation validation (cardinality, dimensions, savings)
     backend.py                # Abstract MetricsBackend interface + response models
     elastic_backend.py        # ES transform provisioning (ILM, index, transform lifecycle)
+    prometheus_exporter.py    # Prometheus metrics: reads ES metrics indices, exposes /metrics endpoint
     debug_ui.html             # Portal UI: Pipeline (6-step walkthrough) + Rules Manager (served at GET /debug)
     tests/
       conftest.py             # Shared fixtures: factories, mocks, FastAPI TestClient with in-memory SQLite
@@ -158,7 +173,13 @@ logs2metrics/
       test_api_status.py      # Backend status + zero-doc (Bug 7) tests
       test_api_errors.py      # Health + provision failure tests
       test_service_map.py     # Auth parity (Bug 3) + auto-fill tests
+      test_prometheus_exporter.py # Prometheus metric collection + sanitization tests
       test_static_analysis.py # Anti-pattern checks (Bugs 1, 5, 6)
+  prometheus/
+    prometheus.yml              # Scrape config (60s interval, targets api:8000)
+  grafana/
+    provisioning/               # Auto-provision datasource + dashboard provider
+    dashboards/                 # Pre-built Grafana dashboard JSON
 ```
 
 ---
@@ -211,25 +232,26 @@ All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-
 | DELETE | `/api/metrics-dashboard/panels/{rule_id}` | Remove panel from dashboard + delete visualization & data view |
 | DELETE | `/api/metrics-dashboard` | Delete entire metrics dashboard + all associated visualizations & data views |
 
-### Server Config + Health
+### Server Config + Health + Monitoring
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/config` | Server-side config (default KIBANA_URL) for UI pre-population |
 | GET | `/api/health` | Health monitor status: last check time, check interval, rules in error |
+| GET | `/metrics` | Prometheus scrape endpoint — per-rule metrics + transform health in text format |
 
-### Portal UI + Proxies
+### Portal UI + Debug
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/debug` | Portal UI: Pipeline + Rules Manager |
-| POST | `/api/debug/generate` | Proxy to log-generator (routes by `X-Kibana-Url`) |
-| POST | `/api/debug/generate-recent` | Proxy to log-generator — events timestamped at `now` (routes by `X-Kibana-Url`) |
-| POST | `/api/debug/generate-toy` | Proxy to log-generator toy scenario (routes by `X-Kibana-Url`) |
-| DELETE | `/api/debug/logs` | Proxy to log-generator delete endpoint (routes by `X-Kibana-Url`) |
+| POST | `/api/debug/generate` | Generate synthetic logs spread across 24h (routes by `X-Kibana-Url`) |
+| POST | `/api/debug/generate-recent` | Generate logs timestamped at `now` for live injection (routes by `X-Kibana-Url`) |
+| POST | `/api/debug/generate-toy` | Generate predictable toy dataset for testing (routes by `X-Kibana-Url`) |
+| DELETE | `/api/debug/logs` | Delete all log documents (routes by `X-Kibana-Url`) |
 | POST | `/api/es/search` | Thin ES search proxy (routes by `X-Kibana-Url`) |
 | GET | `/api/transforms/{id}` | Proxy to ES _transform API (routes by `X-Kibana-Url`) |
 | POST | `/api/transforms/{id}/schedule-now` | Trigger immediate transform checkpoint (bypass frequency wait) |
 
-All proxy endpoints accept the `X-Kibana-Url` header and route to the corresponding backend services via `_KIBANA_SERVICE_MAP` in `main.py`. The service map also includes `kibana_auth` for security-enabled instances — `get_kibana_conn` auto-fills Kibana credentials from the map when the user doesn't provide them, mirroring how `_get_es_client` handles ES auth.
+All endpoints that accept the `X-Kibana-Url` header route to the corresponding ES instance via `_KIBANA_SERVICE_MAP` in `main.py`. The service map also includes `kibana_auth` for security-enabled instances — `get_kibana_conn` auto-fills Kibana credentials from the map when the user doesn't provide them, mirroring how `_get_es_client` handles ES auth. Log generation runs inline in the API (via `log_generator.py`) using the resolved ES client.
 
 ---
 

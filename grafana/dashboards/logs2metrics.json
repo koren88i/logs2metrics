@@ -1,0 +1,179 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Transform Health",
+      "description": "Health status per rule (0=unknown, 1=green, 2=yellow, 3=red, 4=stopped)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "text": "Unknown", "color": "text" } }, "type": "value" },
+            { "options": { "1": { "text": "Green", "color": "green" } }, "type": "value" },
+            { "options": { "2": { "text": "Yellow", "color": "yellow" } }, "type": "value" },
+            { "options": { "3": { "text": "Red", "color": "red" } }, "type": "value" },
+            { "options": { "4": { "text": "Stopped", "color": "orange" } }, "type": "value" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "l2m_transform_health",
+          "legendFormat": "{{rule_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Documents Processed (rate/min)",
+      "description": "Rate of documents processed by each transform",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "rate(l2m_transform_docs_processed[5m]) * 60",
+          "legendFormat": "{{rule_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Documents Indexed (rate/min)",
+      "description": "Rate of documents indexed into metrics indices",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "rate(l2m_transform_docs_indexed[5m]) * 60",
+          "legendFormat": "{{rule_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Rule: $rule",
+      "description": "Metrics for rule $rule. One panel is auto-generated per active rule.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "repeat": "rule",
+      "repeatDirection": "v",
+      "maxPerRow": 1,
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 5,
+            "pointSize": 5,
+            "showPoints": "auto"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "{__name__=~\"l2m_rule_.*\", rule_name=\"$rule\"}",
+          "legendFormat": "{{__name__}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["logs2metrics"],
+  "templating": {
+    "list": [
+      {
+        "name": "rule",
+        "label": "Rule",
+        "type": "query",
+        "query": "label_values(l2m_transform_health, rule_name)",
+        "datasource": { "type": "prometheus" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Logs2Metrics",
+  "uid": "l2m-overview",
+  "version": 2
+}

@@ -5,6 +5,34 @@
 
 ---
 
+## Prometheus Exporter + Grafana Integration (2026-02-14)
+
+- **Feature**: Added Prometheus exporter — reads pre-computed metrics from ES metrics indices and exposes them at `GET /metrics` in Prometheus text format
+  - Per-rule metrics: `l2m_rule_{name}_{value_field}` with dimension labels
+  - Transform health metrics: `l2m_transform_health`, `l2m_transform_docs_processed`, `l2m_transform_docs_indexed`
+  - Scrape-time collection (queries ES on each scrape, no background threads)
+  - 60-second scrape interval, 5-minute ES query lookback window
+  - Deduplicates by dimension combination (keeps latest value)
+- **Feature**: Added Grafana with auto-provisioned dashboard
+  - Panels: Transform health (stat), docs processed/indexed (time series), per-rule metrics (auto-discovered)
+  - Prometheus datasource pre-configured
+  - Access: http://localhost:3000 (admin/admin)
+- **Stack**: Added Prometheus (port 9090) and Grafana (port 3000) to Docker Compose
+- **Deps**: Added `prometheus-client==0.21.0`
+- **Tests**: Added 28 unit tests for `prometheus_exporter.py` (total: 195)
+
+---
+
+## Inline log generator, remove log-generator containers (2026-02-14)
+
+- Moved log generation logic from the separate `log-generator/` Docker service into `api/log_generator.py`
+- API debug endpoints (`/api/debug/generate`, `generate-recent`, `generate-toy`, `DELETE logs`) now call local functions using the resolved ES client instead of proxying to a separate container
+- Removed `log-generator` and `log-generator2` services from `docker-compose.yml` (7 services → 5)
+- Removed `_get_log_generator_url` and `log_generator` keys from `_KIBANA_SERVICE_MAP`
+- Also removed `--reload` flag from API Dockerfile (was causing increasing CPU usage from file watcher)
+
+---
+
 ## Original Plan Phases (Specs)
 
 ### Phase 1 Spec: Local Dev Environment + Synthetic Logs

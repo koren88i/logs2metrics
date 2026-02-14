@@ -19,7 +19,7 @@ Logs2Metrics automates converting those repeated aggregations into pre-computed 
 - Keep dependencies minimal. Every added library is something the team needs to learn and maintain.
 - Comments should explain *why*, not *what*. If the *what* isn't obvious, simplify the code.
 
-**Stack**: Docker Compose (ES 8.12 + Kibana 8.12 + FastAPI + Log Generator), SQLite, single-page portal UI
+**Stack**: Docker Compose (ES 8.12 + Kibana 8.12 + FastAPI), SQLite, single-page portal UI
 
 **Key files**:
 - `api/main.py` — FastAPI endpoints, proxy routing, connection handling
@@ -37,7 +37,7 @@ Logs2Metrics automates converting those repeated aggregations into pre-computed 
 ## Running Tests
 
 ```bash
-python -m pytest -v          # 167 tests, no Docker required
+python -m pytest -v          # 195 tests, no Docker required
 ```
 
 ---
@@ -117,7 +117,7 @@ When something doesn't work as expected, **do not jump to the first plausible ex
 
 ## Test Strategy
 
-The current test suite (167 tests) mocks all external services (ES, Kibana, log-generator). This means:
+The current test suite (195 tests) mocks all external services (ES, Kibana, log-generator). This means:
 - **What it validates**: Our code does what we wrote — correct API contracts, model validation, error handling, static patterns.
 - **What it cannot validate**: Whether our assumptions about external system behavior are correct.
 

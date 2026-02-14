@@ -9,7 +9,7 @@ from pathlib import Path
 
 from elasticsearch import Elasticsearch, NotFoundError as ESNotFoundError
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from httpx import HTTPStatusError
 import httpx
 from sqlmodel import Session, select
@@ -18,6 +18,7 @@ import analyzer
 import es_connector
 import guardrails
 import kibana_connector
+import log_generator
 from analyzer import DashboardAnalysis
 from kibana_connector import KibanaConnection
 from backend import BackendStatus, TransformHealth
@@ -168,6 +169,20 @@ def get_kibana_conn(
         if svc and "kibana_auth" in svc:
             username, password = svc["kibana_auth"]
     return KibanaConnection(url=url, username=username, password=password)
+
+
+# ── Prometheus metrics endpoint ───────────────────────────────────────
+
+
+@app.get("/metrics")
+def prometheus_metrics():
+    """Expose pre-computed metrics in Prometheus text format for scraping."""
+    from prometheus_exporter import collect_and_generate
+
+    return Response(
+        content=collect_and_generate(),
+        media_type="text/plain; version=0.0.4",
+    )
 
 
 # ── CRUD endpoints ────────────────────────────────────────────────────
@@ -641,28 +656,17 @@ def api_estimate(body: RuleCreate):
 
 _es = Elasticsearch(ES_URL)
 
-# Map Kibana URLs to their corresponding log-generator and ES service URLs
+# Map Kibana URLs to their corresponding ES service URLs and credentials
 _KIBANA_SERVICE_MAP = {
     "http://kibana:5601": {
-        "log_generator": "http://log-generator:8000",
         "es_url": "http://elasticsearch:9200",
     },
     "http://kibana2:5601": {
-        "log_generator": "http://log-generator2:8000",
         "es_url": "http://elasticsearch2:9200",
         "es_auth": ("elastic", "admin1"),
         "kibana_auth": ("elastic", "admin1"),
     },
 }
-
-
-def _get_log_generator_url(x_kibana_url: str | None) -> str:
-    """Resolve the log-generator URL from the connected Kibana URL."""
-    if x_kibana_url:
-        svc = _KIBANA_SERVICE_MAP.get(x_kibana_url.rstrip("/"))
-        if svc:
-            return svc["log_generator"]
-    return "http://log-generator:8000"
 
 
 def _get_es_client(x_kibana_url: str | None) -> Elasticsearch:
@@ -679,50 +683,32 @@ def _get_es_client(x_kibana_url: str | None) -> Elasticsearch:
 
 @app.post("/api/debug/generate")
 def debug_generate(request_body: dict, x_kibana_url: str | None = Header(default=None)):
-    """Proxy to log-generator service to avoid CORS."""
+    """Generate synthetic logs spread across the last 24 hours."""
     count = request_body.get("count", 10)
-    gen_url = _get_log_generator_url(x_kibana_url)
-    with httpx.Client(timeout=30) as client:
-        resp = client.post(
-            f"{gen_url}/generate",
-            json={"count": count},
-        )
-        resp.raise_for_status()
-        return resp.json()
+    es_client = _get_es_client(x_kibana_url)
+    return log_generator.generate(es_client, count=count)
 
 
 @app.post("/api/debug/generate-recent")
 def debug_generate_recent(request_body: dict, x_kibana_url: str | None = Header(default=None)):
-    """Proxy to log-generator recent logs (timestamped at now) for live injection."""
+    """Generate logs timestamped at now for live injection into open buckets."""
     count = request_body.get("count", 50)
-    gen_url = _get_log_generator_url(x_kibana_url)
-    with httpx.Client(timeout=30) as client:
-        resp = client.post(
-            f"{gen_url}/generate-recent",
-            json={"count": count},
-        )
-        resp.raise_for_status()
-        return resp.json()
+    es_client = _get_es_client(x_kibana_url)
+    return log_generator.generate_recent(es_client, count=count)
 
 
 @app.post("/api/debug/generate-toy")
 def debug_generate_toy(x_kibana_url: str | None = Header(default=None)):
-    """Proxy to log-generator toy scenario."""
-    gen_url = _get_log_generator_url(x_kibana_url)
-    with httpx.Client(timeout=30) as client:
-        resp = client.post(f"{gen_url}/generate-toy")
-        resp.raise_for_status()
-        return resp.json()
+    """Generate a predictable toy dataset for end-to-end testing."""
+    es_client = _get_es_client(x_kibana_url)
+    return log_generator.generate_toy(es_client)
 
 
 @app.delete("/api/debug/logs")
 def debug_delete_logs(x_kibana_url: str | None = Header(default=None)):
-    """Proxy to log-generator DELETE /logs to avoid CORS."""
-    gen_url = _get_log_generator_url(x_kibana_url)
-    with httpx.Client(timeout=30) as client:
-        resp = client.delete(f"{gen_url}/logs")
-        resp.raise_for_status()
-        return resp.json()
+    """Delete all documents from the log index."""
+    es_client = _get_es_client(x_kibana_url)
+    return log_generator.delete_logs(es_client)
 
 
 @app.post("/api/es/search")

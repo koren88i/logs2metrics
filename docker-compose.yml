@@ -32,18 +32,6 @@ services:
       timeout: 10s
       retries: 20
 
-  log-generator:
-    build: ./log-generator
-    container_name: l2m-log-generator
-    environment:
-      - ES_HOST=http://elasticsearch:9200
-      - ES_INDEX=app-logs
-    ports:
-      - "8090:8000"
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-
   api:
     build: ./api
     container_name: l2m-api
@@ -110,21 +98,50 @@ services:
       timeout: 10s
       retries: 20
 
-  log-generator2:
-    build: ./log-generator
-    container_name: l2m-log-generator2
-    environment:
-      - ES_HOST=http://elasticsearch2:9200
-      - ES_INDEX=app-logs
-      - ES_USER=elastic
-      - ES_PASS=admin1
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: l2m-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
     ports:
-      - "8092:8000"
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
     depends_on:
-      elasticsearch2:
+      api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: l2m-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   es-data:
   es2-data:
   api-data:
+  prometheus-data:
+  grafana-data:
