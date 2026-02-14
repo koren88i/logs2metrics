@@ -78,6 +78,9 @@ def collect_and_generate() -> bytes:
     queries ES for each active rule, and repopulates.
     """
     _clear_rule_gauges()
+    _transform_health._metrics.clear()
+    _transform_docs_processed._metrics.clear()
+    _transform_docs_indexed._metrics.clear()
 
     es = Elasticsearch(ES_URL)
     try:
