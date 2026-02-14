@@ -16,10 +16,10 @@
 - **Feature**: Added Grafana with auto-provisioned dashboard
   - Panels: Transform health (stat), docs processed/indexed (time series), per-rule metrics (auto-discovered)
   - Prometheus datasource pre-configured
-  - Access: http://localhost:3000 (admin/admin)
-- **Stack**: Added Prometheus (port 9090) and Grafana (port 3000) to Docker Compose
+  - Access: http://localhost:3001 (admin/admin)
+- **Stack**: Added Prometheus (port 9091) and Grafana (port 3001) to Docker Compose
 - **Deps**: Added `prometheus-client==0.21.0`
-- **Tests**: Added 28 unit tests for `prometheus_exporter.py` (total: 195)
+- **Tests**: Added 29 unit tests for `prometheus_exporter.py` (total: 196)
 
 ---
 

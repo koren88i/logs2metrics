@@ -12,7 +12,7 @@
       "title": "Transform Health",
       "description": "Health status per rule (0=unknown, 1=green, 2=yellow, 3=red, 4=stopped)",
       "type": "stat",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -54,60 +54,72 @@
       ]
     },
     {
-      "title": "Documents Processed (rate/min)",
-      "description": "Rate of documents processed by each transform",
-      "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+      "title": "Documents Processed",
+      "description": "Total documents processed by each transform",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 10,
-            "pointSize": 5,
-            "showPoints": "auto"
-          },
-          "unit": "short"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
       },
       "targets": [
         {
-          "expr": "rate(l2m_transform_docs_processed[5m]) * 60",
+          "expr": "l2m_transform_docs_processed",
           "legendFormat": "{{rule_name}}",
           "refId": "A"
         }
       ]
     },
     {
-      "title": "Documents Indexed (rate/min)",
-      "description": "Rate of documents indexed into metrics indices",
-      "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 6 },
+      "title": "Documents Indexed",
+      "description": "Total documents indexed into metrics indices",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 10,
-            "pointSize": 5,
-            "showPoints": "auto"
-          },
-          "unit": "short"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
       },
       "targets": [
         {
-          "expr": "rate(l2m_transform_docs_indexed[5m]) * 60",
+          "expr": "l2m_transform_docs_indexed",
           "legendFormat": "{{rule_name}}",
           "refId": "A"
         }
@@ -117,7 +129,7 @@
       "title": "Rule: $rule",
       "description": "Metrics for rule $rule. One panel is auto-generated per active rule.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
       "repeat": "rule",
       "repeatDirection": "v",
       "maxPerRow": 1,
@@ -141,7 +153,7 @@
       "targets": [
         {
           "expr": "{__name__=~\"l2m_rule_.*\", rule_name=\"$rule\"}",
-          "legendFormat": "{{__name__}}",
+          "legendFormat": "",
           "refId": "A"
         }
       ]
@@ -175,5 +187,5 @@
   "timezone": "",
   "title": "Logs2Metrics",
   "uid": "l2m-overview",
-  "version": 2
+  "version": 3
 }

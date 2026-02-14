@@ -51,8 +51,8 @@ Swagger API docs: **http://localhost:8091/docs**
 | Elasticsearch 8.12 | 9201 | Log storage + metrics indices |
 | Kibana 8.12 | 5602 | Dashboard visualization |
 | API (FastAPI) | 8091 | Control plane + portal UI |
-| Prometheus | 9090 | Metrics scraping + storage |
-| Grafana | 3000 | Metrics dashboards (admin/admin) |
+| Prometheus | 9091 | Metrics scraping + storage |
+| Grafana | 3001 | Metrics dashboards (admin/admin) |
 
 All services run via Docker Compose. Data is stored in SQLite (rules) and Elasticsearch (logs + metrics).
 
@@ -116,8 +116,8 @@ Connect to any Kibana instance (with optional auth) directly from the portal hea
 
 Pre-computed metrics from ES are automatically exported to Prometheus via the `/metrics` endpoint. Grafana ships with a pre-built dashboard.
 
-- **Prometheus UI**: http://localhost:9090 — query `l2m_rule_*` or `l2m_transform_*` metrics
-- **Grafana**: http://localhost:3000 (admin/admin) — "Logs2Metrics" dashboard auto-provisioned
+- **Prometheus UI**: http://localhost:9091 — query `l2m_rule_*` or `l2m_transform_*` metrics
+- **Grafana**: http://localhost:3001 (admin/admin) — "Logs2Metrics" dashboard auto-provisioned
 - **Scrape interval**: 60 seconds
 - **Metric naming**: `l2m_rule_{rule_name}_{value_field}{dimension_labels}`
 
@@ -125,7 +125,7 @@ Pre-computed metrics from ES are automatically exported to Prometheus via the `/
 
 ```bash
 pip install -r requirements-test.txt -r api/requirements.txt
-python -m pytest -v    # 195 tests, no Docker required
+python -m pytest -v    # 196 tests, no Docker required
 ```
 
 All external dependencies (ES, Kibana) are mocked. Tests cover model validation, scoring engine, cost estimator, guardrails, transform provisioning, API endpoints, and static analysis checks.
@@ -145,7 +145,7 @@ logs2metrics/
     guardrails.py           # Pre-creation validation
     cost_estimator.py       # Storage cost comparison
     debug_ui.html           # Portal UI (self-contained)
-    tests/                  # 195 unit/integration tests
+    tests/                  # 196 unit/integration tests
   prometheus/               # Prometheus scrape config
   grafana/                  # Grafana provisioning + dashboards
   seed-dashboards/          # Kibana dashboard seeder

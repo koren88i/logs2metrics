@@ -54,8 +54,10 @@ HEALTH_VALUE = {
     "stopped": 4,
 }
 
-# How far back to query each metrics index
-LOOKBACK = "5m"
+# How far back to query each metrics index.  Wide window so we always find
+# data even when transforms run infrequently.  Deduplication (keep latest
+# value per unique dimension combination) prevents stale inflation.
+LOOKBACK = "24h"
 
 
 def sanitize_metric_name(name: str) -> str:

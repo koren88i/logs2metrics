@@ -55,8 +55,8 @@ Portal UI: `http://localhost:8091/debug` | Swagger: `http://localhost:8091/docs`
 | Elasticsearch 8.12 | `docker.elastic.co/elasticsearch/elasticsearch:8.12.0` | 9201 | 9200 |
 | Kibana 8.12 | `docker.elastic.co/kibana/kibana:8.12.0` | 5602 | 5601 |
 | API | `./api` (FastAPI) | 8091 | 8000 |
-| Prometheus | `prom/prometheus:v2.51.0` | 9090 | 9090 |
-| Grafana | `grafana/grafana:10.4.0` | 3000 | 3000 |
+| Prometheus | `prom/prometheus:v2.51.0` | 9091 | 9090 |
+| Grafana | `grafana/grafana:10.4.0` | 3001 | 3000 |
 
 ### Seed Dashboards (`seed-dashboards/`)
 - Python script using Kibana saved objects NDJSON import API
