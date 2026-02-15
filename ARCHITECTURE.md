@@ -57,6 +57,11 @@ Portal UI: `http://localhost:8091/debug` | Swagger: `http://localhost:8091/docs`
 | API | `./api` (FastAPI) | 8091 | 8000 |
 | Prometheus | `prom/prometheus:v2.51.0` | 9091 | 9090 |
 | Grafana | `grafana/grafana:10.4.0` | 3001 | 3000 |
+| Elasticsearch 2 (security-enabled) | `docker.elastic.co/elasticsearch/elasticsearch:8.12.0` | 9202 | 9200 |
+| Kibana 2 (security-enabled) | `docker.elastic.co/kibana/kibana:8.12.0` | 5603 | 5601 |
+| es2-setup | (init container) | — | — |
+
+The second ES/Kibana stack (`elasticsearch2` + `kibana2`) runs with security enabled (basic auth: `elastic`/`admin1`) for testing multi-instance and authenticated connections. `es2-setup` is a one-shot init container that sets the `kibana_system` password.
 
 ### Seed Dashboards (`seed-dashboards/`)
 - Python script using Kibana saved objects NDJSON import API
@@ -174,6 +179,7 @@ logs2metrics/
       test_api_errors.py      # Health + provision failure tests
       test_service_map.py     # Auth parity (Bug 3) + auto-fill tests
       test_prometheus_exporter.py # Prometheus metric collection + sanitization tests
+      test_health_monitor.py  # Background health monitor + error state tests
       test_static_analysis.py # Anti-pattern checks (Bugs 1, 5, 6)
   prometheus/
     prometheus.yml              # Scrape config (60s interval, targets api:8000)

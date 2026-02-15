@@ -197,7 +197,7 @@
 6. **No static analysis for UI code** — no way to enforce patterns like "use `api()` not `fetch()`".
 7. **Swallowed errors** — silent 400 responses masked real failures.
 
-These gaps were partially addressed by the test suite (135 tests across 12 files) added post-Phase 7, including regression tests for all 7 bugs and static analysis anti-pattern checks.
+These gaps were partially addressed by the test suite added post-Phase 7 (135 tests across 12 files at that time; now 196 tests across 13 files), including regression tests for all 7 bugs and static analysis anti-pattern checks.
 
 ---
 

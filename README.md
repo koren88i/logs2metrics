@@ -34,13 +34,14 @@ pip install -r requirements.txt
 python seed.py --kibana http://localhost:5602
 ```
 
-Open the portal at **http://localhost:8091/debug** and follow the 5-step walkthrough:
+Open the portal at **http://localhost:8091/debug** and follow the 6-step walkthrough:
 
 1. **Generate logs** — Create synthetic log data
 2. **View raw logs** — See what's in Elasticsearch
 3. **Analyze panels** — Score each dashboard panel for metric conversion suitability
 4. **Create rules** — Provision ES transforms that materialize metrics
 5. **Compare** — Side-by-side: log aggregation query vs pre-computed metrics query
+6. **Live injection** — Inject new events, watch transforms update in real time
 
 Swagger API docs: **http://localhost:8091/docs**
 
@@ -53,6 +54,8 @@ Swagger API docs: **http://localhost:8091/docs**
 | API (FastAPI) | 8091 | Control plane + portal UI |
 | Prometheus | 9091 | Metrics scraping + storage |
 | Grafana | 3001 | Metrics dashboards (admin/admin) |
+| Elasticsearch 2 | 9202 | Second instance (security-enabled, `elastic`/`admin1`) |
+| Kibana 2 | 5603 | Second instance (security-enabled) |
 
 All services run via Docker Compose. Data is stored in SQLite (rules) and Elasticsearch (logs + metrics).
 
@@ -107,7 +110,7 @@ Full endpoint reference: [ARCHITECTURE.md](ARCHITECTURE.md#api-endpoints)
 
 The self-service portal at `/debug` has two tabs:
 
-- **Pipeline** — 5-step guided walkthrough: generate logs, analyze dashboards, create rules, compare results
+- **Pipeline** — 6-step guided walkthrough: generate logs, analyze dashboards, create rules, compare results, live injection
 - **Rules Manager** — Persistent rule management: view, edit, compare, activate/pause, delete, create metrics dashboards
 
 Connect to any Kibana instance (with optional auth) directly from the portal header.
