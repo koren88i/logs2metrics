@@ -133,6 +133,8 @@
 <div class="kibana-bar">
   <label>Kibana:</label>
   <input type="text" id="kibanaUrl" placeholder="loading..." style="min-width:280px">
+  <label style="margin-left:0.75rem">ES:</label>
+  <input type="text" id="esUrl" placeholder="(auto from Kibana)" style="min-width:200px">
   <button class="secondary" id="authToggle" onclick="toggleKibanaAuth()" style="padding:0.3rem 0.6rem;font-size:0.8rem">Auth</button>
   <span id="kibanaAuthFields" style="display:none">
     <input type="text" id="kibanaUser" placeholder="username" style="width:100px">
@@ -167,6 +169,7 @@
       <button class="danger" onclick="resetLogs()">Reset Logs</button>
       <button onclick="runStep1()">Generate 200 Logs</button>
       <button class="secondary" onclick="runStep1Toy()">Toy Scenario (10 identical logs)</button>
+      <button class="secondary" onclick="skipToAnalysis()" style="margin-left:1rem">Skip — Use Existing Data</button>
       <div class="output" id="out1"></div>
     </div>
   </div>
@@ -316,6 +319,11 @@ async function api(method, path, body) {
     if (kibUser) opts.headers['X-Kibana-User'] = kibUser;
     if (kibPass) opts.headers['X-Kibana-Pass'] = kibPass;
   }
+  // Inject ES connection override header when a URL is entered
+  const esUrl = document.getElementById('esUrl')?.value?.trim();
+  if (esUrl) {
+    opts.headers['X-ES-Url'] = esUrl;
+  }
   if (body) opts.body = JSON.stringify(body);
   const resp = await fetch(path, opts);
   if (resp.status === 204) return null;
@@ -410,6 +418,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const cfg = await fetch('/api/config').then(r => r.json());
     document.getElementById('kibanaUrl').value = cfg.kibana_url || '';
+    document.getElementById('esUrl').value = cfg.es_url || '';
   } catch(_) {}
   if (document.getElementById('kibanaUrl').value.trim()) {
     connectKibana();
@@ -470,6 +479,15 @@ async function runStep1Toy() {
     markDone(1); unlockStep(2);
     setStatus('Toy scenario loaded: 10 identical logs within 1 minute. Should compress to 1 metric point (count=10).');
   } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
+}
+
+async function skipToAnalysis() {
+  const out = document.getElementById('out1');
+  out.innerHTML = '<div class="stat">Skipped log generation — using existing data in the connected Elasticsearch.</div>';
+  markDone(1); unlockStep(2);
+  markDone(2); unlockStep(3);
+  loadPanels();
+  setStatus('Skipped to analysis. Dashboard panels loaded — preview aggregations, analyze, and create rules.');
 }
 
 // ── Step 2: See Raw Logs ─────────────────────────────────────────
@@ -534,6 +552,7 @@ async function loadPanels() {
       const dims = (p.group_by_fields || []).join(', ') || 'none';
       const metrics = (p.metrics || []).map(m => m.field ? `${m.type}(${m.field})` : m.type).join(', ') || 'none';
       const isRawDocs = p.has_raw_docs;
+      const noDataSource = !p.index_pattern && !p.has_raw_docs;  // markdown, decorative panels
       // Pre-select bucket from the panel's date_histogram interval when available.
       // Falls back to "1m" when the panel uses auto-interval or no date_histogram.
       const panelInterval = p.date_histogram_interval || null;
@@ -552,10 +571,11 @@ async function loadPanels() {
                 <span>Dims: <b>${dims}</b></span>
                 <span>Metrics: <b>${metrics}</b></span>
                 ${isRawDocs ? '<span style="color:#f85149">Raw docs (no aggregations)</span>' : ''}
+                ${noDataSource ? '<span style="color:#8b949e">No data source (decorative panel)</span>' : ''}
               </div>
             </div>
             <div class="panel-card-actions">
-              <button class="secondary" onclick="previewPanelAgg(${idx})" ${isRawDocs ? 'disabled' : ''}>Preview Agg</button>
+              <button class="secondary" onclick="previewPanelAgg(${idx})" ${isRawDocs || noDataSource ? 'disabled' : ''}>Preview Agg</button>
               <label style="font-size:0.75rem;color:#8b949e">Lookback<select id="lookback${idx}" style="margin-left:3px">${LOOKBACK_OPTIONS}</select></label>
               <button onclick="analyzePanel(${idx})">Analyze</button>
               <label style="font-size:0.75rem;color:#8b949e" title="${bucketAutoFilled ? 'Auto-filled from panel date_histogram interval (' + panelInterval + '). Change to a larger bucket for fewer metric docs (lower cost) or a smaller bucket for finer resolution.' : 'Panel uses Kibana auto-interval, which changes dynamically based on the time range. The transform needs a fixed interval. This sets the finest resolution available — you can always aggregate up at query time (e.g. 1m metrics viewed at 1h granularity) but cannot go finer. Default 1m suits most operational dashboards.'}">Bucket${bucketAutoFilled ? '*' : ''}<select id="timeBucket${idx}" style="margin-left:3px">
@@ -577,7 +597,7 @@ async function loadPanels() {
                 <option value="5m">5m</option>
               </select></label>
               <label style="font-size:0.75rem;display:flex;align-items:center;gap:3px;cursor:pointer"><input type="checkbox" id="skipGuardrails${idx}"> Skip guardrails</label>
-              <button class="secondary" onclick="createRuleFromPanel(${idx})" ${isRawDocs ? 'disabled title="Cannot create rule from raw docs panel"' : ''}>Create Rule</button>
+              <button class="secondary" onclick="createRuleFromPanel(${idx})" ${isRawDocs || noDataSource ? 'disabled title="' + (isRawDocs ? 'Cannot create rule from raw docs panel' : 'No data source') + '"' : ''}>Create Rule</button>
             </div>
           </div>
           <div class="panel-card-result" id="panelResult${idx}"></div>
@@ -588,87 +608,130 @@ async function loadPanels() {
   } catch(e) { container.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }
 }
 
+// Find the first metric value in a bucket (metric_0, metric_1, etc. or doc_count)
+function extractMetricVal(bucket) {
+  for (const k of Object.keys(bucket)) {
+    if (k.startsWith('metric_') && bucket[k] && bucket[k].value !== undefined) return bucket[k].value;
+  }
+  return bucket.doc_count;
+}
+
+// Find the first sub-aggregation with buckets in a parent object
+function findBucketAgg(obj) {
+  for (const k of Object.keys(obj)) {
+    if (obj[k] && obj[k].buckets) return { key: k, agg: obj[k] };
+  }
+  return null;
+}
+
+// Recursively flatten nested bucket aggregations into table rows
+function flattenBuckets(parentObj) {
+  const found = findBucketAgg(parentObj);
+  if (!found) return [];
+  const rows = [];
+  for (const b of found.agg.buckets) {
+    const subFound = findBucketAgg(b);
+    if (subFound) {
+      const subRows = flattenBuckets(b);
+      for (const sr of subRows) rows.push({ dimCells: `<td>${b.key}</td>` + sr.dimCells, val: sr.val });
+    } else {
+      rows.push({ dimCells: `<td>${b.key}</td>`, val: extractMetricVal(b) });
+    }
+  }
+  return rows;
+}
+
 async function previewPanelAgg(idx) {
   const panel = state.panels[idx];
   const out = document.getElementById('panelResult' + idx);
   out.innerHTML = loading('Running aggregation...');
 
-  const timeField = panel.time_field || 'timestamp';
+  const index = panel.index_pattern;
+  if (!index) { out.innerHTML = error('Cannot preview: panel has no index pattern. This panel type may not support aggregation preview.'); return; }
+
   const dims = panel.group_by_fields || [];
   const metrics = panel.metrics || [];
-  const filterQuery = panel.filter_query
-    ? { query_string: { query: panel.filter_query } }
-    : { match_all: {} };
+  const aggTypes = panel.agg_types || [];
+  const hasDateHistogram = aggTypes.includes('date_histogram');
 
-  // Build agg query matching what this panel does
-  const innerAggs = {};
-  if (dims.length > 0) {
-    const dimAggs = {};
-    // Add metric sub-agg if panel has one
-    if (metrics.length > 0) {
-      const m = metrics[0];
-      if (m.type === 'avg' && m.field) dimAggs.metric_val = { avg: { field: m.field } };
-      else if (m.type === 'sum' && m.field) dimAggs.metric_val = { sum: { field: m.field } };
-    }
-    innerAggs.by_dim = { terms: { field: dims[0], size: 20 }, aggs: dimAggs };
-  } else if (metrics.length > 0) {
-    const m = metrics[0];
-    if (m.type === 'avg' && m.field) innerAggs.metric_val = { avg: { field: m.field } };
-    else if (m.type === 'sum' && m.field) innerAggs.metric_val = { sum: { field: m.field } };
+  // Use pre-built ES query from panel parsing (faithful to original panel config).
+  // The backend builds this directly from visState.aggs or Lens column definitions.
+  const query = JSON.parse(JSON.stringify(panel.es_query || { size: 0, query: { match_all: {} }, aggs: {} }));
+
+  // Inject time range filter using the Lookback dropdown and the panel's time field.
+  // This matches what Kibana does: it wraps the panel query in a bool + range filter.
+  const lookback = document.getElementById('lookback' + idx).value;
+  const timeField = panel.time_field || 'timestamp';
+  if (lookback) {
+    const originalQuery = query.query || { match_all: {} };
+    query.query = {
+      bool: {
+        must: [originalQuery],
+        filter: [{ range: { [timeField]: { gte: lookback, lte: 'now' } } }],
+      }
+    };
   }
 
-  const query = {
-    size: 0,
-    query: filterQuery,
-    aggs: {
-      by_bucket: {
-        date_histogram: { field: timeField, fixed_interval: '1m', min_doc_count: 0 },
-        aggs: innerAggs
-      }
-    }
-  };
-
   try {
-    const index = panel.index_pattern || 'app-logs';
     const data = await api('POST', '/api/es/search', { index, body: query });
-    const allBuckets = data.aggregations.by_bucket.buckets;
-    const buckets = allBuckets.filter(b => b.doc_count > 0);
 
     // Determine value label
     let valLabel = 'Count';
-    if (metrics.length > 0 && metrics[0].field) {
-      valLabel = `${metrics[0].type}(${metrics[0].field})`;
-    }
-    const dimLabel = dims.length > 0 ? dims[0] : 'Dimension';
+    if (metrics.length > 0 && metrics[0].field) valLabel = `${metrics[0].type}(${metrics[0].field})`;
+    function fmtVal(v) { return v != null ? (typeof v === 'number' && !Number.isInteger(v) ? v.toFixed(2) : v) : '-'; }
 
+    // Walk the response aggregations generically — works with any nesting
+    const aggs = data.aggregations || {};
+    const topBucketAgg = findBucketAgg(aggs);
     let rows = '';
-    for (const b of buckets) {
-      if (b.by_dim) {
-        for (const sb of b.by_dim.buckets) {
-          const val = sb.metric_val !== undefined ? sb.metric_val.value : sb.doc_count;
-          rows += `<tr><td>${new Date(b.key_as_string).toLocaleString()}</td><td>${sb.key}</td><td>${val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-'}</td></tr>`;
+    let totalBuckets = 0;
+
+    if (hasDateHistogram && topBucketAgg) {
+      // Time-series: top-level is date_histogram, may have nested terms
+      const allBuckets = topBucketAgg.agg.buckets;
+      const buckets = allBuckets.filter(b => b.doc_count > 0);
+      totalBuckets = buckets.length;
+      for (const b of buckets) {
+        const ts = new Date(b.key_as_string).toLocaleString();
+        const subRows = flattenBuckets(b);
+        if (subRows.length > 0) {
+          for (const r of subRows) rows += `<tr><td>${ts}</td>${r.dimCells}<td>${fmtVal(r.val)}</td></tr>`;
+        } else {
+          rows += `<tr><td>${ts}</td>${dims.map(() => '<td>-</td>').join('')}<td>${fmtVal(extractMetricVal(b))}</td></tr>`;
         }
-      } else {
-        const val = b.metric_val !== undefined ? b.metric_val.value : b.doc_count;
-        rows += `<tr><td>${new Date(b.key_as_string).toLocaleString()}</td><td>-</td><td>${val != null ? (typeof val === 'number' ? val.toFixed(2) : val) : '-'}</td></tr>`;
       }
+    } else if (topBucketAgg) {
+      // Terms-only or other bucket agg — flatten recursively
+      const flatRows = flattenBuckets(aggs);
+      totalBuckets = flatRows.length;
+      for (const r of flatRows) rows += `<tr>${r.dimCells}<td>${fmtVal(r.val)}</td></tr>`;
+    } else {
+      // Single aggregate value — find first metric_N or total
+      totalBuckets = 1;
+      const v = extractMetricVal(aggs);
+      rows = `<tr><td>${fmtVal(v)}</td></tr>`;
     }
+
+    // Build header columns from the actual dimension names discovered in the query
+    const dimHeaders = dims.map(d => `<th>${d}</th>`).join('');
+    const headerCells = (hasDateHistogram ? '<th>Time Bucket</th>' : '') + dimHeaders + `<th>${valLabel}</th>`;
+    const resultLabel = hasDateHistogram ? `Results (${totalBuckets} buckets)` : `Results (${totalBuckets} rows)`;
 
     out.innerHTML = `
       <div style="margin-top:0.5rem">
         <span class="stat">Total docs: <b>${data.hits.total.value.toLocaleString()}</b></span>
-        <span class="stat">Buckets with data: <b>${buckets.length}</b></span>
+        <span class="stat">Rows: <b>${totalBuckets}</b></span>
         <span class="stat">Query: <b>${data.took}ms</b></span>
       </div>
       <div class="panel" style="margin-top:0.5rem">
-        <div class="panel-label">Aggregation Query (what this Kibana panel runs)</div>
+        <div class="panel-label">Aggregation Query</div>
         <pre>${syntaxHL(query)}</pre>
       </div>
-      <div class="panel" style="margin-top:0.5rem">
-        <div class="panel-label">Results (${buckets.length} buckets, 1m interval)</div>
+      <div class="panel" style="margin-top:0.5rem; max-height:400px; overflow:auto">
+        <div class="panel-label">${resultLabel}</div>
         <table>
-          <tr><th>Time Bucket</th><th>${dimLabel}</th><th>${valLabel}</th></tr>
-          ${rows || '<tr><td colspan="3" style="color:#8b949e">No matching documents</td></tr>'}
+          <tr>${headerCells}</tr>
+          ${rows || '<tr><td colspan="' + (dims.length + (hasDateHistogram ? 2 : 1)) + '" style="color:#8b949e">No matching documents</td></tr>'}
         </table>
       </div>
     `;
@@ -740,6 +803,8 @@ async function createRuleFromPanel(idx) {
   const panel = state.panels[idx];
   const out = document.getElementById('panelResult' + idx);
 
+  if (!panel.index_pattern) { out.innerHTML = error('Cannot create rule: panel has no index pattern. This panel type may not be supported.'); return; }
+
   const compute = inferComputeType(panel);
   const filterQuery = panel.filter_query
     ? { query_string: { query: panel.filter_query } }
@@ -761,7 +826,7 @@ async function createRuleFromPanel(idx) {
     name: panel.title || `Rule from ${panel.panel_id}`,
     owner: 'debug-ui',
     source: {
-      index_pattern: panel.index_pattern || 'app-logs',
+      index_pattern: panel.index_pattern,
       time_field: panel.time_field || 'timestamp',
       filter_query: filterQuery,
     },

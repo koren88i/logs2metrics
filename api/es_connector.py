@@ -1,6 +1,8 @@
 """Elasticsearch read-only connector.
 
 Provides index metadata, mappings, cardinality, and stats.
+All functions accept an optional ``es_client`` parameter to override the
+default ES connection — used when the UI connects to an external cluster.
 """
 
 from elasticsearch import Elasticsearch
@@ -26,9 +28,10 @@ def _format_bytes(n: int) -> str:
     return f"{n:.1f}pb"
 
 
-def list_indices(pattern: str = "*") -> list[IndexInfo]:
+def list_indices(pattern: str = "*", es_client: Elasticsearch | None = None) -> list[IndexInfo]:
     """Return index names, doc counts, and store sizes matching a pattern."""
-    rows = es.cat.indices(index=pattern, format="json", h="index,docs.count,store.size", bytes="b", s="index")
+    client = es_client or es
+    rows = client.cat.indices(index=pattern, format="json", h="index,docs.count,store.size", bytes="b", s="index")
     results = []
     for row in rows:
         name = row["index"]
@@ -44,9 +47,10 @@ def list_indices(pattern: str = "*") -> list[IndexInfo]:
     return results
 
 
-def get_mapping(index: str) -> IndexMapping:
+def get_mapping(index: str, es_client: Elasticsearch | None = None) -> IndexMapping:
     """Return field names and types for an index."""
-    raw = es.indices.get_mapping(index=index)
+    client = es_client or es
+    raw = client.indices.get_mapping(index=index)
     properties = raw[index]["mappings"].get("properties", {})
     fields = []
     for field_name, field_def in sorted(properties.items()):
@@ -60,9 +64,10 @@ def get_mapping(index: str) -> IndexMapping:
     return IndexMapping(index=index, fields=fields)
 
 
-def get_field_cardinality(index: str, field: str) -> FieldCardinality:
+def get_field_cardinality(index: str, field: str, es_client: Elasticsearch | None = None) -> FieldCardinality:
     """Return approximate distinct count for a field in an index."""
-    result = es.search(
+    client = es_client or es
+    result = client.search(
         index=index,
         size=0,
         aggs={"cardinality": {"cardinality": {"field": field}}},
@@ -71,9 +76,10 @@ def get_field_cardinality(index: str, field: str) -> FieldCardinality:
     return FieldCardinality(index=index, field=field, cardinality=value)
 
 
-def get_index_stats(index: str) -> IndexStats:
+def get_index_stats(index: str, es_client: Elasticsearch | None = None) -> IndexStats:
     """Return doc count, size, and query rate for an index."""
-    raw = es.indices.stats(index=index)
+    client = es_client or es
+    raw = client.indices.stats(index=index)
     total = raw["_all"]["total"]
     docs_count = total["docs"]["count"]
     store_bytes = total["store"]["size_in_bytes"]

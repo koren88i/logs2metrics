@@ -71,7 +71,7 @@ The second ES/Kibana stack (`elasticsearch2` + `kibana2`) runs with security ena
 - FastAPI + SQLModel + SQLite
 - `LogMetricRule` CRUD at `/api/rules`
 - ES connector (`es_connector.py`) — index metadata, mappings, cardinality, stats via `elasticsearch-py`
-- Kibana connector (`kibana_connector.py`) — dashboard listing, panel parsing, metrics dashboard CRUD + visualization cloning via `httpx`; supports per-request URL + basic auth override via `KibanaConnection` dataclass
+- Kibana connector (`kibana_connector.py`) — dashboard listing, panel parsing, metrics dashboard CRUD + visualization cloning via `httpx`; supports per-request URL + basic auth override via `KibanaConnection` dataclass. Panel parsing handles all Kibana visualization schemas: `"metric"`, `"segment"` (date_histogram or terms for pie/bar), `"group"` (split series), `"bucket"` (table rows). Builds pre-computed ES queries from visState aggs (legacy) and Lens column definitions. Resolves `time_field` from Kibana data views for panels without explicit date_histogram.
 - Connector response models (`connector_models.py`) — IndexInfo, IndexMapping, FieldCardinality, IndexStats, DashboardSummary, PanelAnalysis, DashboardDetail
 - Database (`database.py`) — SQLite engine + session + auto-migration for new columns
 - Config (`config.py`) — ES_URL / KIBANA_URL from environment variables
@@ -217,7 +217,7 @@ logs2metrics/
 | GET | `/api/kibana/dashboards/{id}` | Dashboard with parsed PanelAnalysis list |
 | GET | `/api/kibana/test-connection` | Test Kibana connectivity, return version + health |
 
-All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass` headers to override the default server connection.
+All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass` headers to override the default Kibana connection. All ES endpoints accept optional `X-ES-Url`, `X-ES-User`, `X-ES-Pass` headers to override the default ES connection. When `X-ES-Url` is not provided, ES client is resolved from the `_KIBANA_SERVICE_MAP` (based on `X-Kibana-Url`) or the default `ES_URL` env var.
 
 ### Analysis
 | Method | Path | Description |
@@ -241,7 +241,7 @@ All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-
 ### Server Config + Health + Monitoring
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/config` | Server-side config (default KIBANA_URL) for UI pre-population |
+| GET | `/api/config` | Server-side config (default KIBANA_URL, ES_URL) for UI pre-population |
 | GET | `/api/health` | Health monitor status: last check time, check interval, rules in error |
 | GET | `/metrics` | Prometheus scrape endpoint — per-rule metrics + transform health in text format |
 
@@ -257,7 +257,7 @@ All Kibana endpoints accept optional `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-
 | GET | `/api/transforms/{id}` | Proxy to ES _transform API (routes by `X-Kibana-Url`) |
 | POST | `/api/transforms/{id}/schedule-now` | Trigger immediate transform checkpoint (bypass frequency wait) |
 
-All endpoints that accept the `X-Kibana-Url` header route to the corresponding ES instance via `_KIBANA_SERVICE_MAP` in `main.py`. The service map also includes `kibana_auth` for security-enabled instances — `get_kibana_conn` auto-fills Kibana credentials from the map when the user doesn't provide them, mirroring how `_get_es_client` handles ES auth. Log generation runs inline in the API (via `log_generator.py`) using the resolved ES client.
+All endpoints that modify or query ES use `Depends(get_es_client)` to resolve the target ES cluster. Resolution priority: `X-ES-Url` header → `_KIBANA_SERVICE_MAP` lookup from `X-Kibana-Url` → default `ES_URL`. The service map also includes `kibana_auth` for security-enabled instances — `get_kibana_conn` auto-fills Kibana credentials from the map when the user doesn't provide them. Log generation runs inline in the API (via `log_generator.py`) using the resolved ES client.
 
 ---
 
@@ -265,14 +265,16 @@ All endpoints that accept the `X-Kibana-Url` header route to the corresponding E
 
 A self-contained single-page application at `http://localhost:8091/debug` with two tabs. No external dependencies beyond the running Docker stack.
 
-### Kibana Connection Bar
+### Connection Bar
 
-At the top of the portal, a connection bar allows pointing at any Kibana instance:
-- **URL input**: Pre-populated from `GET /api/config` (server's default `KIBANA_URL`) on page load. Enter any Kibana URL (e.g. `http://kibana2:5601`).
-- **Auth toggle**: Click "Auth" to reveal username/password fields for HTTP basic auth.
-- **Connect button**: Validates connectivity via `GET /api/kibana/test-connection`, shows Kibana version + health status, and loads dashboards on success. Blocks empty URL with an error message.
+At the top of the portal, a connection bar allows pointing at any Kibana and Elasticsearch instance:
+- **Kibana URL input**: Pre-populated from `GET /api/config` (server's default `KIBANA_URL`) on page load. Enter any Kibana URL (e.g. `http://kibana2:5601`).
+- **ES URL input**: Pre-populated from `GET /api/config` (server's default `ES_URL`). Enter any ES URL to override where transforms, metrics indices, and all ES operations target. When blank, defaults to the service map or `ES_URL` env var.
+- **Auth toggle**: Click "Auth" to reveal username/password fields for HTTP basic auth (Kibana + ES).
+- **Connect button**: Validates Kibana connectivity via `GET /api/kibana/test-connection`, shows Kibana version + health status, and loads dashboards on success. Blocks empty URL with an error message.
 - **Auto-connect on load**: If the URL field is pre-populated, the portal auto-connects and shows status immediately.
-- Connection headers (`X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass`) are injected on every API call based on current field values (stateless, no persistent session).
+- Connection headers (`X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass`, `X-ES-Url`) are injected on every API call based on current field values (stateless, no persistent session).
+- **ES client resolution priority**: `X-ES-Url` header → service map lookup from `X-Kibana-Url` → default `ES_URL` env var. This determines which ES cluster receives all operations (index stats, cardinality checks, transform provisioning, status queries).
 - **Docker URL mapping**: "View in Kibana" links map Docker-internal URLs to browser-accessible localhost URLs (`http://kibana:5601` → `http://localhost:5602`, `http://kibana2:5601` → `http://localhost:5603`).
 
 ### Tab 1: Pipeline (6-Step Walkthrough)
@@ -294,7 +296,8 @@ Step 2: See Raw Logs
 Step 3: Analyze Panels + Create Rules
   ├── Per-panel card showing: type, index, aggs, dimensions, metrics
   └── Per-panel actions:
-       ├── "Preview Agg" — runs the panel's ES aggregation inline (date_histogram + terms + metric)
+       ├── "Preview Agg" — runs the panel's pre-built ES query with a time range filter from the Lookback dropdown
+       │    Supports all panel types: time-series (date_histogram), tables (terms-only), pie/bar (segment terms)
        │    Shows query, matching docs, buckets with data, results table
        ├── Lookback selector (1h / 6h / 1d / 7d / 30d / 90d / 1y) — for Analyze scoring
        ├── "Analyze" — runs suitability scoring (0-95) with per-signal breakdown bars
@@ -361,7 +364,7 @@ Metrics Dashboard section (above rule list):
 
 ### Key Behaviors
 
-- **Kibana connection**: Session-level URL override with optional basic auth. URL pre-populated from server config on load, auto-connects. All API calls inject connection headers based on current field values (stateless).
+- **Kibana + ES connection**: Session-level URL override with optional basic auth for both Kibana and ES. URLs pre-populated from server config on load, auto-connects. All API calls inject connection headers based on current field values (stateless). ES URL can be set independently to target a different cluster than the default — all transforms, metrics indices, and queries will route there.
 - **Dashboard selector**: Dynamically populated; drives panel loading and analysis across the Pipeline tab. Changing the selection reloads Step 3 panels immediately if the step is already unlocked.
 - **Guardrail bypass**: Small test datasets often fail the net_savings guardrail (metric storage > log storage). The "Skip guardrails" checkbox passes `?skip_guardrails=true` to the API.
 - **Status display (Rules Manager)**: Shows whatever the backend returns immediately (green/red/unknown/stopped with docs processed). Only polls further if health is `yellow` (transitioning). Does NOT require a checkpoint — avoids the infinite "Checking..." bug with zero-match transforms.

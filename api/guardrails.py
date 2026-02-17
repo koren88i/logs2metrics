@@ -7,6 +7,8 @@ Inspired by Datadog's cardinality warnings for log-based metrics.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field
 
 from cost_estimator import (
@@ -16,6 +18,9 @@ from cost_estimator import (
 )
 from models import RuleCreate
 import es_connector
+
+if TYPE_CHECKING:
+    from elasticsearch import Elasticsearch
 
 # ── Thresholds ───────────────────────────────────────────────────────
 
@@ -49,9 +54,9 @@ class EstimateResponse(BaseModel):
 # ── Public API ───────────────────────────────────────────────────────
 
 
-def evaluate(rule: RuleCreate) -> GuardrailsReport:
+def evaluate(rule: RuleCreate, es_client: Elasticsearch | None = None) -> GuardrailsReport:
     """Run all guardrails against a proposed rule and return the report."""
-    cost = estimate_cost(rule)
+    cost = estimate_cost(rule, es_client=es_client)
     results: list[GuardrailResult] = []
 
     _check_dimension_limit(rule, results)

@@ -94,19 +94,20 @@ def _build_aggregations(compute: ComputeConfig, time_field: str) -> dict:
 
 class ElasticMetricsBackend(MetricsBackend):
 
-    def validate(self, rule: LogMetricRule) -> ValidationResult:
+    def validate(self, rule: LogMetricRule, es_client: Elasticsearch | None = None) -> ValidationResult:
+        client = es_client or es
         errors = []
         source = SourceConfig(**rule.source)
         compute = ComputeConfig(**rule.compute)
 
         # Check source index exists
-        if not es.indices.exists(index=source.index_pattern):
+        if not client.indices.exists(index=source.index_pattern):
             errors.append(f"Source index '{source.index_pattern}' does not exist")
 
         # Check compute field exists for non-count types
         if compute.type != ComputeType.count and compute.field:
             try:
-                mapping = es.indices.get_mapping(index=source.index_pattern)
+                mapping = client.indices.get_mapping(index=source.index_pattern)
                 props = {}
                 for idx_name in mapping:
                     props = mapping[idx_name]["mappings"].get("properties", {})
@@ -121,34 +122,35 @@ class ElasticMetricsBackend(MetricsBackend):
         # Check transform doesn't already exist
         transform_id = f"{TRANSFORM_PREFIX}{rule.id}"
         try:
-            es.transform.get_transform(transform_id=transform_id)
+            client.transform.get_transform(transform_id=transform_id)
             errors.append(f"Transform '{transform_id}' already exists")
         except NotFoundError:
             pass
 
         return ValidationResult(valid=len(errors) == 0, errors=errors)
 
-    def provision(self, rule: LogMetricRule) -> ProvisionResult:
+    def provision(self, rule: LogMetricRule, es_client: Elasticsearch | None = None) -> ProvisionResult:
+        client = es_client or es
         transform_id = f"{TRANSFORM_PREFIX}{rule.id}"
         dest_index = f"{INDEX_PREFIX}{rule.id}"
         backend_cfg = BackendConfig(**rule.backend_config)
 
         try:
             # Step 1: ILM policy
-            ilm_policy = self._ensure_ilm_policy(backend_cfg.retention_days)
+            ilm_policy = self._ensure_ilm_policy(backend_cfg.retention_days, client)
 
             # Step 2: Metrics index
-            self._create_metrics_index(rule, ilm_policy)
+            self._create_metrics_index(rule, ilm_policy, client)
 
             # Step 3: Create transform
             transform_body = self._build_transform_body(rule)
-            es.transform.put_transform(
+            client.transform.put_transform(
                 transform_id=transform_id, body=transform_body, timeout="30s"
             )
             log.info("Created transform %s", transform_id)
 
             # Step 4: Start transform
-            es.transform.start_transform(
+            client.transform.start_transform(
                 transform_id=transform_id, timeout="30s"
             )
             log.info("Started transform %s", transform_id)
@@ -162,7 +164,7 @@ class ElasticMetricsBackend(MetricsBackend):
 
         except Exception as e:
             log.error("Provisioning failed for rule %s: %s", rule.id, e)
-            self._cleanup_partial(transform_id, dest_index)
+            self._cleanup_partial(transform_id, dest_index, client)
             return ProvisionResult(
                 success=False,
                 transform_id=transform_id,
@@ -170,10 +172,11 @@ class ElasticMetricsBackend(MetricsBackend):
                 error=str(e),
             )
 
-    def get_status(self, rule_id: int) -> BackendStatus:
+    def get_status(self, rule_id: int, es_client: Elasticsearch | None = None) -> BackendStatus:
+        client = es_client or es
         transform_id = f"{TRANSFORM_PREFIX}{rule_id}"
         try:
-            stats = es.transform.get_transform_stats(transform_id=transform_id)
+            stats = client.transform.get_transform_stats(transform_id=transform_id)
             transforms = stats.get("transforms", [])
             if not transforms:
                 return BackendStatus(
@@ -216,13 +219,14 @@ class ElasticMetricsBackend(MetricsBackend):
                 error="Transform not found",
             )
 
-    def deprovision(self, rule_id: int) -> None:
+    def deprovision(self, rule_id: int, es_client: Elasticsearch | None = None) -> None:
+        client = es_client or es
         transform_id = f"{TRANSFORM_PREFIX}{rule_id}"
         index_name = f"{INDEX_PREFIX}{rule_id}"
 
         # Stop transform
         try:
-            es.transform.stop_transform(
+            client.transform.stop_transform(
                 transform_id=transform_id,
                 wait_for_completion=True,
                 timeout="30s",
@@ -236,7 +240,7 @@ class ElasticMetricsBackend(MetricsBackend):
 
         # Delete transform
         try:
-            es.transform.delete_transform(transform_id=transform_id)
+            client.transform.delete_transform(transform_id=transform_id)
             log.info("Deleted transform %s", transform_id)
         except NotFoundError:
             pass
@@ -245,7 +249,7 @@ class ElasticMetricsBackend(MetricsBackend):
 
         # Delete metrics index
         try:
-            es.indices.delete(index=index_name)
+            client.indices.delete(index=index_name)
             log.info("Deleted metrics index %s", index_name)
         except NotFoundError:
             pass
@@ -254,13 +258,13 @@ class ElasticMetricsBackend(MetricsBackend):
 
     # ── Private helpers ──────────────────────────────────────────────
 
-    def _ensure_ilm_policy(self, retention_days: int) -> str:
+    def _ensure_ilm_policy(self, retention_days: int, client: Elasticsearch) -> str:
         policy_name = f"{ILM_PREFIX}{retention_days}d"
         try:
-            es.ilm.get_lifecycle(name=policy_name)
+            client.ilm.get_lifecycle(name=policy_name)
             log.info("ILM policy %s already exists", policy_name)
         except NotFoundError:
-            es.ilm.put_lifecycle(
+            client.ilm.put_lifecycle(
                 name=policy_name,
                 body={
                     "policy": {
@@ -284,7 +288,7 @@ class ElasticMetricsBackend(MetricsBackend):
             log.info("Created ILM policy %s", policy_name)
         return policy_name
 
-    def _create_metrics_index(self, rule: LogMetricRule, ilm_policy: str) -> str:
+    def _create_metrics_index(self, rule: LogMetricRule, ilm_policy: str, client: Elasticsearch) -> str:
         index_name = f"{INDEX_PREFIX}{rule.id}"
         source = SourceConfig(**rule.source)
         group_by = GroupByConfig(**rule.group_by)
@@ -306,7 +310,7 @@ class ElasticMetricsBackend(MetricsBackend):
         elif compute.type == ComputeType.distribution:
             properties[f"pct_{compute.field}"] = {"type": "object"}
 
-        es.indices.create(
+        client.indices.create(
             index=index_name,
             body={
                 "settings": {
@@ -375,10 +379,10 @@ class ElasticMetricsBackend(MetricsBackend):
             "sync": sync_block,
         }
 
-    def _cleanup_partial(self, transform_id: str, index_name: str) -> None:
+    def _cleanup_partial(self, transform_id: str, index_name: str, client: Elasticsearch) -> None:
         """Best-effort cleanup of partially provisioned resources."""
         try:
-            es.transform.stop_transform(
+            client.transform.stop_transform(
                 transform_id=transform_id,
                 wait_for_completion=True,
                 timeout="10s",
@@ -386,11 +390,11 @@ class ElasticMetricsBackend(MetricsBackend):
         except Exception:
             pass
         try:
-            es.transform.delete_transform(transform_id=transform_id)
+            client.transform.delete_transform(transform_id=transform_id)
         except Exception:
             pass
         try:
-            es.indices.delete(index=index_name)
+            client.indices.delete(index=index_name)
         except Exception:
             pass
 

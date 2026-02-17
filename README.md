@@ -36,9 +36,9 @@ python seed.py --kibana http://localhost:5602
 
 Open the portal at **http://localhost:8091/debug** and follow the 6-step walkthrough:
 
-1. **Generate logs** — Create synthetic log data
+1. **Generate logs** — Create synthetic log data (or **Skip — Use Existing Data** to analyze an external Kibana's dashboards)
 2. **View raw logs** — See what's in Elasticsearch
-3. **Analyze panels** — Score each dashboard panel for metric conversion suitability
+3. **Analyze panels** — Score each dashboard panel for metric conversion suitability (supports time-series, tables, pie charts, bar charts)
 4. **Create rules** — Provision ES transforms that materialize metrics
 5. **Compare** — Side-by-side: log aggregation query vs pre-computed metrics query
 6. **Live injection** — Inject new events, watch transforms update in real time
@@ -61,7 +61,7 @@ All services run via Docker Compose. Data is stored in SQLite (rules) and Elasti
 
 ## How It Works
 
-1. **Analyze** — Reads Kibana dashboard panels, extracts aggregation structure, scores suitability (0-95) based on 6 signals
+1. **Analyze** — Reads Kibana dashboard panels (time-series, tables, pie/bar charts, Lens), extracts aggregation structure, scores suitability (0-95) based on 6 signals
 2. **Guard** — Validates cost guardrails before creating rules: cardinality limits, dimension count, net storage savings
 3. **Provision** — Creates an ES continuous transform per rule: ILM policy, metrics index, transform definition, auto-start
 4. **Visualize** — Clones original Kibana visualizations, rewires them to read from metrics indices, adds to a metrics dashboard
@@ -102,7 +102,7 @@ Each rule has two timing settings that control the underlying ES continuous tran
 | `GET` | `/metrics` | Prometheus scrape endpoint (per-rule metrics + transform health) |
 | `GET` | `/api/kibana/test-connection` | Test Kibana connectivity |
 
-All Kibana-related endpoints accept `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass` headers for multi-instance support.
+All Kibana-related endpoints accept `X-Kibana-Url`, `X-Kibana-User`, `X-Kibana-Pass` headers for multi-instance support. All ES-related endpoints accept `X-ES-Url`, `X-ES-User`, `X-ES-Pass` headers to target any Elasticsearch cluster. When `X-ES-Url` is not set, ES client is resolved from the Kibana service map or the default `ES_URL` env var.
 
 Full endpoint reference: [ARCHITECTURE.md](ARCHITECTURE.md#api-endpoints)
 
@@ -110,10 +110,13 @@ Full endpoint reference: [ARCHITECTURE.md](ARCHITECTURE.md#api-endpoints)
 
 The self-service portal at `/debug` has two tabs:
 
-- **Pipeline** — 6-step guided walkthrough: generate logs, analyze dashboards, create rules, compare results, live injection
+- **Pipeline** — 6-step guided walkthrough: generate logs (or skip for external data), analyze dashboards, create rules, compare results, live injection
 - **Rules Manager** — Persistent rule management: view, edit, compare, activate/pause, delete, create metrics dashboards
 
-Connect to any Kibana instance (with optional auth) directly from the portal header.
+Connect to any Kibana and Elasticsearch instance directly from the portal header:
+- **Kibana URL** + optional auth — routes dashboard listing, panel parsing, and visualization cloning
+- **ES URL** + optional auth — routes all ES operations: transforms, metrics indices, cardinality checks, search proxies
+- **"Skip — Use Existing Data"** — bypasses synthetic log generation, enabling analysis of real dashboards on external clusters
 
 ## Monitoring (Prometheus + Grafana)
 

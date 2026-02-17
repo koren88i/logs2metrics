@@ -171,6 +171,54 @@ def get_kibana_conn(
     return KibanaConnection(url=url, username=username, password=password)
 
 
+# ── ES connection dependency ─────────────────────────────────────────
+
+
+_es = Elasticsearch(ES_URL)
+
+# Map Kibana URLs to their corresponding ES service URLs and credentials
+_KIBANA_SERVICE_MAP = {
+    "http://kibana:5601": {
+        "es_url": "http://elasticsearch:9200",
+    },
+    "http://kibana2:5601": {
+        "es_url": "http://elasticsearch2:9200",
+        "es_auth": ("elastic", "admin1"),
+        "kibana_auth": ("elastic", "admin1"),
+    },
+}
+
+
+def get_es_client(
+    x_kibana_url: str | None = Header(default=None),
+    x_es_url: str | None = Header(default=None),
+    x_es_user: str | None = Header(default=None),
+    x_es_pass: str | None = Header(default=None),
+) -> Elasticsearch:
+    """Resolve ES client from headers, service map, or default.
+
+    Priority:
+    1. Explicit X-ES-Url header (user-provided ES URL)
+    2. Service map lookup from X-Kibana-Url
+    3. Default ES_URL (docker-compose Elasticsearch)
+    """
+    if x_es_url:
+        kwargs = {}
+        if x_es_user and x_es_pass:
+            kwargs["basic_auth"] = (x_es_user, x_es_pass)
+        return Elasticsearch(x_es_url.rstrip("/"), **kwargs)
+
+    if x_kibana_url:
+        svc = _KIBANA_SERVICE_MAP.get(x_kibana_url.rstrip("/"))
+        if svc:
+            kwargs = {}
+            if "es_auth" in svc:
+                kwargs["basic_auth"] = svc["es_auth"]
+            return Elasticsearch(svc["es_url"], **kwargs)
+
+    return _es
+
+
 # ── Prometheus metrics endpoint ───────────────────────────────────────
 
 
@@ -189,9 +237,9 @@ def prometheus_metrics():
 
 
 @app.post("/api/rules", response_model=RuleResponse, status_code=201)
-def create_rule(body: RuleCreate, session: Session = Depends(get_session), skip_guardrails: bool = False):
+def create_rule(body: RuleCreate, session: Session = Depends(get_session), es_client: Elasticsearch = Depends(get_es_client), skip_guardrails: bool = False):
     # Run guardrails before accepting the rule
-    report = guardrails.evaluate(body)
+    report = guardrails.evaluate(body, es_client=es_client)
     if not report.all_passed and not skip_guardrails:
         failures = [r for r in report.results if not r.passed]
         detail = [
@@ -226,7 +274,7 @@ def create_rule(body: RuleCreate, session: Session = Depends(get_session), skip_
 
     # Provision backend resources if rule is active
     if body.status == RuleStatus.active:
-        result = metrics_backend.provision(rule)
+        result = metrics_backend.provision(rule, es_client=es_client)
         if not result.success:
             rule.status = RuleStatus.error.value
             rule.updated_at = datetime.utcnow()
@@ -253,7 +301,7 @@ def get_rule(rule_id: int, session: Session = Depends(get_session)):
 
 @app.put("/api/rules/{rule_id}", response_model=RuleResponse)
 def update_rule(
-    rule_id: int, body: RuleUpdate, session: Session = Depends(get_session)
+    rule_id: int, body: RuleUpdate, session: Session = Depends(get_session), es_client: Elasticsearch = Depends(get_es_client),
 ):
     rule = session.get(LogMetricRule, rule_id)
     if not rule:
@@ -283,7 +331,7 @@ def update_rule(
     new_status = rule.status
     if old_status != new_status:
         if new_status == RuleStatus.active.value and old_status != RuleStatus.active.value:
-            result = metrics_backend.provision(rule)
+            result = metrics_backend.provision(rule, es_client=es_client)
             if not result.success:
                 rule.status = RuleStatus.error.value
                 rule.updated_at = datetime.utcnow()
@@ -292,7 +340,7 @@ def update_rule(
                 session.refresh(rule)
         elif old_status == RuleStatus.active.value and new_status != RuleStatus.active.value:
             try:
-                metrics_backend.deprovision(rule.id)
+                metrics_backend.deprovision(rule.id, es_client=es_client)
             except Exception as e:
                 log.warning("Deprovision error for rule %s: %s", rule_id, e)
     elif old_status == RuleStatus.active.value and new_status == RuleStatus.active.value:
@@ -302,10 +350,10 @@ def update_rule(
         if config_fields & update_data.keys():
             log.info("Config changed on active rule %s — reprovisioning transform", rule_id)
             try:
-                metrics_backend.deprovision(rule.id)
+                metrics_backend.deprovision(rule.id, es_client=es_client)
             except Exception as e:
                 log.warning("Deprovision error during reprovision for rule %s: %s", rule_id, e)
-            result = metrics_backend.provision(rule)
+            result = metrics_backend.provision(rule, es_client=es_client)
             if not result.success:
                 rule.status = RuleStatus.error.value
                 rule.updated_at = datetime.utcnow()
@@ -317,7 +365,7 @@ def update_rule(
 
 
 @app.delete("/api/rules/{rule_id}", status_code=204)
-def delete_rule(rule_id: int, session: Session = Depends(get_session)):
+def delete_rule(rule_id: int, session: Session = Depends(get_session), es_client: Elasticsearch = Depends(get_es_client)):
     rule = session.get(LogMetricRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -325,7 +373,7 @@ def delete_rule(rule_id: int, session: Session = Depends(get_session)):
     # Deprovision backend resources if rule was active or errored
     if rule.status in (RuleStatus.active.value, RuleStatus.error.value):
         try:
-            metrics_backend.deprovision(rule.id)
+            metrics_backend.deprovision(rule.id, es_client=es_client)
         except Exception as e:
             log.warning("Deprovision error for rule %s: %s", rule_id, e)
 
@@ -338,7 +386,7 @@ def delete_rule(rule_id: int, session: Session = Depends(get_session)):
 
 
 @app.get("/api/rules/{rule_id}/status", response_model=BackendStatus)
-def get_rule_backend_status(rule_id: int, session: Session = Depends(get_session)):
+def get_rule_backend_status(rule_id: int, session: Session = Depends(get_session), es_client: Elasticsearch = Depends(get_es_client)):
     """Return backend health and processing stats for a provisioned rule."""
     rule = session.get(LogMetricRule, rule_id)
     if not rule:
@@ -348,7 +396,7 @@ def get_rule_backend_status(rule_id: int, session: Session = Depends(get_session
             status_code=400,
             detail=f"Rule is in '{rule.status}' status — no backend resources to check",
         )
-    return metrics_backend.get_status(rule_id)
+    return metrics_backend.get_status(rule_id, es_client=es_client)
 
 
 # ── Health ────────────────────────────────────────────────────────────
@@ -375,23 +423,23 @@ def api_health():
 
 
 @app.get("/api/es/indices", response_model=list[IndexInfo])
-def api_list_indices(pattern: str = Query(default="*")):
-    return es_connector.list_indices(pattern)
+def api_list_indices(pattern: str = Query(default="*"), es_client: Elasticsearch = Depends(get_es_client)):
+    return es_connector.list_indices(pattern, es_client=es_client)
 
 
 @app.get("/api/es/indices/{index}/mapping", response_model=IndexMapping)
-def api_get_mapping(index: str):
-    return es_connector.get_mapping(index)
+def api_get_mapping(index: str, es_client: Elasticsearch = Depends(get_es_client)):
+    return es_connector.get_mapping(index, es_client=es_client)
 
 
 @app.get("/api/es/indices/{index}/cardinality/{field}", response_model=FieldCardinality)
-def api_get_field_cardinality(index: str, field: str):
-    return es_connector.get_field_cardinality(index, field)
+def api_get_field_cardinality(index: str, field: str, es_client: Elasticsearch = Depends(get_es_client)):
+    return es_connector.get_field_cardinality(index, field, es_client=es_client)
 
 
 @app.get("/api/es/indices/{index}/stats", response_model=IndexStats)
-def api_get_index_stats(index: str):
-    return es_connector.get_index_stats(index)
+def api_get_index_stats(index: str, es_client: Elasticsearch = Depends(get_es_client)):
+    return es_connector.get_index_stats(index, es_client=es_client)
 
 
 # -- Kibana Connector endpoints ----------------------------------------
@@ -435,7 +483,7 @@ def api_test_kibana_connection(conn: KibanaConnection | None = Depends(get_kiban
 @app.get("/api/config")
 def api_config():
     """Return server-side config (default URLs) so the UI can display them."""
-    return {"kibana_url": KIBANA_URL}
+    return {"kibana_url": KIBANA_URL, "es_url": ES_URL}
 
 
 # -- Metrics Dashboard endpoints ----------------------------------------
@@ -633,17 +681,18 @@ def api_analyze_dashboard(
     dashboard_id: str,
     lookback: str | None = Query(default=None, description="Override lookback window, e.g. 'now-7d', 'now-30d'"),
     conn: KibanaConnection | None = Depends(get_kibana_conn),
+    es_client: Elasticsearch = Depends(get_es_client),
 ):
-    return analyzer.analyze_dashboard(dashboard_id, lookback_override=lookback, conn=conn)
+    return analyzer.analyze_dashboard(dashboard_id, lookback_override=lookback, conn=conn, es_client=es_client)
 
 
 # -- Cost Estimation + Guardrails endpoints ----------------------------
 
 
 @app.post("/api/estimate", response_model=EstimateResponse)
-def api_estimate(body: RuleCreate):
+def api_estimate(body: RuleCreate, es_client: Elasticsearch = Depends(get_es_client)):
     """Estimate cost savings and validate guardrails for a draft rule."""
-    report = guardrails.evaluate(body)
+    report = guardrails.evaluate(body, es_client=es_client)
     return EstimateResponse(
         cost_estimate=report.cost_estimate,
         guardrails=report.results,
@@ -654,88 +703,56 @@ def api_estimate(body: RuleCreate):
 # -- Debug UI + proxy endpoints ──────────────────────────────────────
 
 
-_es = Elasticsearch(ES_URL)
-
-# Map Kibana URLs to their corresponding ES service URLs and credentials
-_KIBANA_SERVICE_MAP = {
-    "http://kibana:5601": {
-        "es_url": "http://elasticsearch:9200",
-    },
-    "http://kibana2:5601": {
-        "es_url": "http://elasticsearch2:9200",
-        "es_auth": ("elastic", "admin1"),
-        "kibana_auth": ("elastic", "admin1"),
-    },
-}
-
-
-def _get_es_client(x_kibana_url: str | None) -> Elasticsearch:
-    """Resolve the ES client from the connected Kibana URL."""
-    if x_kibana_url:
-        svc = _KIBANA_SERVICE_MAP.get(x_kibana_url.rstrip("/"))
-        if svc:
-            kwargs = {}
-            if "es_auth" in svc:
-                kwargs["basic_auth"] = svc["es_auth"]
-            return Elasticsearch(svc["es_url"], **kwargs)
-    return _es
-
-
 @app.post("/api/debug/generate")
-def debug_generate(request_body: dict, x_kibana_url: str | None = Header(default=None)):
+def debug_generate(request_body: dict, es_client: Elasticsearch = Depends(get_es_client)):
     """Generate synthetic logs spread across the last 24 hours."""
     count = request_body.get("count", 10)
-    es_client = _get_es_client(x_kibana_url)
     return log_generator.generate(es_client, count=count)
 
 
 @app.post("/api/debug/generate-recent")
-def debug_generate_recent(request_body: dict, x_kibana_url: str | None = Header(default=None)):
+def debug_generate_recent(request_body: dict, es_client: Elasticsearch = Depends(get_es_client)):
     """Generate logs timestamped at now for live injection into open buckets."""
     count = request_body.get("count", 50)
-    es_client = _get_es_client(x_kibana_url)
     return log_generator.generate_recent(es_client, count=count)
 
 
 @app.post("/api/debug/generate-toy")
-def debug_generate_toy(x_kibana_url: str | None = Header(default=None)):
+def debug_generate_toy(es_client: Elasticsearch = Depends(get_es_client)):
     """Generate a predictable toy dataset for end-to-end testing."""
-    es_client = _get_es_client(x_kibana_url)
     return log_generator.generate_toy(es_client)
 
 
 @app.delete("/api/debug/logs")
-def debug_delete_logs(x_kibana_url: str | None = Header(default=None)):
+def debug_delete_logs(es_client: Elasticsearch = Depends(get_es_client)):
     """Delete all documents from the log index."""
-    es_client = _get_es_client(x_kibana_url)
     return log_generator.delete_logs(es_client)
 
 
 @app.post("/api/es/search")
-def es_search_proxy(request_body: dict, x_kibana_url: str | None = Header(default=None)):
+def es_search_proxy(request_body: dict, es_client: Elasticsearch = Depends(get_es_client)):
     """Thin ES search proxy for the debug UI."""
-    index = request_body.get("index", "app-logs")
+    index = request_body.get("index")
+    if not index:
+        raise HTTPException(status_code=400, detail="Missing required field: 'index'")
     body = request_body.get("body", {"query": {"match_all": {}}})
-    es_client = _get_es_client(x_kibana_url)
     result = es_client.search(index=index, body=body)
     return dict(result)
 
 
 @app.get("/api/transforms/{transform_id}")
-def get_transform(transform_id: str, x_kibana_url: str | None = Header(default=None)):
+def get_transform(transform_id: str, es_client: Elasticsearch = Depends(get_es_client)):
     """Proxy to ES _transform API."""
-    es_client = _get_es_client(x_kibana_url)
     result = es_client.transform.get_transform(transform_id=transform_id)
     return dict(result)
 
 
 @app.post("/api/transforms/{transform_id}/schedule-now")
-def schedule_transform_now(transform_id: str, x_kibana_url: str | None = Header(default=None)):
+def schedule_transform_now(transform_id: str, es_client: Elasticsearch = Depends(get_es_client)):
     """Trigger an immediate checkpoint for a continuous transform.
 
     Bypasses the frequency wait — the transform will check for new data right away.
     """
-    es_client = _get_es_client(x_kibana_url)
     result = es_client.transform.schedule_now_transform(transform_id=transform_id)
     return dict(result)
 

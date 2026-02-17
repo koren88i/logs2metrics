@@ -162,6 +162,9 @@ def test_client(mock_es_connector, mock_es_client):
 
     app.dependency_overrides[get_session] = override_get_session
 
+    from main import get_es_client
+    app.dependency_overrides[get_es_client] = lambda: mock_es_client
+
     mock_backend = MagicMock()
     mock_backend.provision.return_value = MagicMock(
         success=True, transform_id="l2m-rule-1",

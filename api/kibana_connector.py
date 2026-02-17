@@ -155,7 +155,13 @@ def _resolve_and_parse_panel(
         return _parse_saved_search(panel_id, panel_title, ref_id, conn=conn)
     elif ref_type == "visualization":
         return _parse_visualization(panel_id, panel_title, ref_id, conn=conn)
+    elif ref_type == "lens":
+        return _parse_lens_panel(panel, conn=conn)
     else:
+        # Try embedded panel (by-value) — Kibana 8 stores full config inline
+        embedded = panel.get("embeddableConfig", {}).get("attributes")
+        if embedded:
+            return _parse_embedded_panel(panel, conn=conn)
         return PanelAnalysis(
             panel_id=panel_id,
             title=panel_title,
@@ -212,7 +218,7 @@ def _parse_visualization(
     attrs = obj["attributes"]
     refs = obj.get("references", [])
 
-    index_pattern = _extract_index_from_refs(refs, conn=conn)
+    index_pattern, data_view_time_field = _extract_index_and_time_field_from_refs(refs, conn=conn)
 
     search_source = json.loads(
         attrs.get("kibanaSavedObjectMeta", {}).get("searchSourceJSON", "{}")
@@ -256,10 +262,22 @@ def _parse_visualization(
                 )
                 if raw_interval and raw_interval != "auto":
                     date_histogram_interval = raw_interval
-        elif schema == "group":
+            else:
+                # Pie/bar charts use "segment" for terms slices
+                field = params.get("field")
+                if field:
+                    group_by_fields.append(field)
+        elif schema in ("group", "bucket"):
+            # "group" = split series in charts, "bucket" = row grouping in tables
             field = params.get("field")
             if field:
                 group_by_fields.append(field)
+
+    es_query = _build_es_query_from_vis_aggs(aggs, filter_query) if aggs else None
+
+    # For panels without date_histogram, fall back to the data view's time field
+    if not time_field and data_view_time_field:
+        time_field = data_view_time_field
 
     return PanelAnalysis(
         panel_id=panel_id,
@@ -273,24 +291,329 @@ def _parse_visualization(
         group_by_fields=group_by_fields,
         has_raw_docs=False,
         filter_query=filter_query,
+        es_query=es_query,
     )
+
+
+def _parse_lens_panel(
+    panel: dict,
+    conn: KibanaConnection | None = None,
+) -> PanelAnalysis:
+    """Parse a Lens panel (by-value) from its embedded config.
+
+    Lens panels store their full state inside
+    panel["embeddableConfig"]["attributes"] including references to data views
+    and column definitions describing aggregations.
+    """
+    panel_id = panel.get("panelIndex", "")
+    panel_title = panel.get("title", "")
+    embedded = panel.get("embeddableConfig", {}).get("attributes", {})
+
+    # Resolve index pattern and time field from embedded references
+    refs = embedded.get("references", [])
+    index_pattern, data_view_time_field = _extract_index_and_time_field_from_refs(refs, conn=conn)
+
+    vis_type = embedded.get("visualizationType", "lens")
+    state = embedded.get("state", {})
+
+    # Extract agg info from Lens column definitions
+    agg_types = []
+    metrics = []
+    group_by_fields = []
+    time_field = None
+    date_histogram_interval = None
+
+    datasource_states = state.get("datasourceStates", {})
+    form_based = datasource_states.get("formBased") or datasource_states.get("indexpattern", {})
+    layers = form_based.get("layers", {})
+
+    # Collect all columns across layers for ES query building
+    all_columns = {}
+    for layer in layers.values():
+        columns = layer.get("columns", {})
+        all_columns.update(columns)
+        for col in columns.values():
+            op = col.get("operationType", "")
+            source_field = col.get("sourceField")
+            params = col.get("params", {})
+
+            if op == "date_histogram":
+                agg_types.append("date_histogram")
+                if source_field:
+                    time_field = source_field
+                raw_interval = params.get("interval")
+                if raw_interval and raw_interval != "auto":
+                    date_histogram_interval = raw_interval
+            elif op in ("count", "sum", "average", "min", "max", "median",
+                        "percentile", "unique_count", "last_value",
+                        "cumulative_sum", "counter_rate", "differences"):
+                agg_types.append(op)
+                metrics.append(MetricInfo(
+                    type=op,
+                    field=source_field if op != "count" else None,
+                ))
+            elif op == "terms":
+                agg_types.append("terms")
+                if source_field:
+                    group_by_fields.append(source_field)
+            elif op == "filters":
+                agg_types.append("filters")
+
+    # Extract filter query from Lens state
+    query = state.get("query", {})
+    query_str = query.get("query", "")
+    filter_query = query_str.strip() if query_str and query_str.strip() else None
+
+    # Build ES query from the raw Lens columns (preserves sizes, ordering, nesting)
+    es_query = _build_es_query_from_lens_columns(all_columns, filter_query) if all_columns else None
+
+    # For panels without date_histogram (e.g. tables), fall back to the
+    # data view's time field so transforms can still bucket by time.
+    if not time_field and data_view_time_field:
+        time_field = data_view_time_field
+
+    return PanelAnalysis(
+        panel_id=panel_id,
+        title=panel_title or embedded.get("title", ""),
+        index_pattern=index_pattern,
+        time_field=time_field,
+        date_histogram_interval=date_histogram_interval,
+        visualization_type=vis_type,
+        agg_types=agg_types,
+        metrics=metrics,
+        group_by_fields=group_by_fields,
+        has_raw_docs=False,
+        filter_query=filter_query,
+        es_query=es_query,
+    )
+
+
+def _parse_embedded_panel(
+    panel: dict,
+    conn: KibanaConnection | None = None,
+) -> PanelAnalysis:
+    """Parse a generic embedded (by-value) panel.
+
+    Extracts the index pattern from embedded references but does not attempt
+    to parse aggregation details for non-Lens panel types (TSVB, maps, etc.).
+    """
+    panel_id = panel.get("panelIndex", "")
+    panel_title = panel.get("title", "")
+    embedded = panel.get("embeddableConfig", {}).get("attributes", {})
+
+    refs = embedded.get("references", [])
+    index_pattern, data_view_time_field = _extract_index_and_time_field_from_refs(refs, conn=conn)
+
+    panel_type = panel.get("type", "unknown")
+
+    return PanelAnalysis(
+        panel_id=panel_id,
+        title=panel_title or embedded.get("title", ""),
+        index_pattern=index_pattern,
+        time_field=data_view_time_field,
+        visualization_type=panel_type,
+    )
+
+
+def _build_es_query_from_vis_aggs(
+    aggs: list[dict],
+    filter_query: str | None,
+) -> dict:
+    """Build an ES query body from a legacy visualization's visState.aggs.
+
+    Preserves the original aggregation structure: date_histogram buckets,
+    terms buckets with their configured sizes, and metric aggregations with
+    their original field references.
+    """
+    es_filter = (
+        {"query_string": {"query": filter_query}} if filter_query
+        else {"match_all": {}}
+    )
+
+    # Separate aggs by schema role
+    segment_aggs = []  # date_histogram, terms used as x-axis segments
+    group_aggs = []    # terms used for grouping (split series)
+    metric_aggs = []   # count, avg, sum, etc.
+
+    for agg in aggs:
+        if not agg.get("enabled", True):
+            continue
+        schema = agg.get("schema", "")
+        agg_type = agg.get("type", "")
+        if schema == "segment" and agg_type == "date_histogram":
+            segment_aggs.append(agg)
+        elif schema in ("segment", "group", "bucket") and agg_type != "date_histogram":
+            # "segment" non-date_histogram = pie/bar slices, "group" = split series,
+            # "bucket" = table rows — all are terms-like grouping aggs
+            group_aggs.append(agg)
+        elif schema == "metric":
+            metric_aggs.append(agg)
+
+    # Build metric sub-aggs
+    es_metric_aggs = {}
+    for i, m in enumerate(metric_aggs):
+        agg_type = m.get("type", "count")
+        field = m.get("params", {}).get("field")
+        agg_name = f"metric_{i}"
+        if agg_type == "count":
+            if field:
+                es_metric_aggs[agg_name] = {"value_count": {"field": field}}
+            # else: doc_count is implicit
+        elif agg_type in ("avg", "sum", "min", "max", "median"):
+            if field:
+                es_type = "avg" if agg_type == "median" else agg_type
+                es_metric_aggs[agg_name] = {es_type: {"field": field}}
+        elif agg_type == "percentiles" and field:
+            percents = m.get("params", {}).get("percents", [50, 95, 99])
+            es_metric_aggs[agg_name] = {"percentiles": {"field": field, "percents": percents}}
+        elif agg_type == "cardinality" and field:
+            es_metric_aggs[agg_name] = {"cardinality": {"field": field}}
+
+    # Build bucket agg chain: segment (date_histogram) > group (terms) > metrics
+    def _wrap_in_terms_chain(terms_aggs, inner_aggs):
+        current = inner_aggs
+        for t in reversed(terms_aggs):
+            field = t.get("params", {}).get("field")
+            size = t.get("params", {}).get("size", 20)
+            order_by = t.get("params", {}).get("orderBy", "_count")
+            order_dir = t.get("params", {}).get("order", "desc")
+            if field:
+                order_key = order_by if order_by in ("_count", "_key") else "_count"
+                current = {f"by_{field}": {"terms": {"field": field, "size": size, "order": {order_key: order_dir}}, "aggs": current}}
+        return current
+
+    inner = _wrap_in_terms_chain(group_aggs, es_metric_aggs)
+
+    # Wrap in date_histogram if present
+    top_aggs = inner
+    for seg in segment_aggs:
+        if seg.get("type") == "date_histogram":
+            field = seg.get("params", {}).get("field", "timestamp")
+            interval = (
+                seg.get("params", {}).get("fixed_interval")
+                or seg.get("params", {}).get("calendar_interval")
+                or seg.get("params", {}).get("interval")
+                or "1m"
+            )
+            if interval == "auto":
+                interval = "1m"
+            top_aggs = {"by_time": {"date_histogram": {"field": field, "fixed_interval": interval, "min_doc_count": 0}, "aggs": inner}}
+            break
+
+    return {"size": 0, "query": es_filter, "aggs": top_aggs}
+
+
+def _build_es_query_from_lens_columns(
+    columns: dict,
+    filter_query: str | None,
+) -> dict:
+    """Build an ES query body from Lens column definitions.
+
+    Maps Lens operationTypes to their ES aggregation equivalents, preserving
+    sizes, ordering, and nesting order from the column definitions.
+    """
+    es_filter = (
+        {"query_string": {"query": filter_query}} if filter_query
+        else {"match_all": {}}
+    )
+
+    date_hist_cols = []
+    terms_cols = []
+    metric_cols = []
+
+    for col_id, col in columns.items():
+        op = col.get("operationType", "")
+        if op == "date_histogram":
+            date_hist_cols.append(col)
+        elif op == "terms":
+            terms_cols.append(col)
+        elif op in ("count", "sum", "average", "min", "max", "median",
+                     "percentile", "unique_count", "last_value",
+                     "cardinality"):
+            metric_cols.append(col)
+
+    # Build metric sub-aggs
+    es_metric_aggs = {}
+    for i, col in enumerate(metric_cols):
+        op = col.get("operationType", "")
+        field = col.get("sourceField")
+        agg_name = f"metric_{i}"
+        type_map = {
+            "average": "avg", "sum": "sum", "min": "min", "max": "max",
+            "median": "median", "unique_count": "cardinality",
+            "cardinality": "cardinality",
+        }
+        es_type = type_map.get(op)
+        if es_type and field:
+            es_metric_aggs[agg_name] = {es_type: {"field": field}}
+        elif op == "percentile" and field:
+            pct = col.get("params", {}).get("percentile", 95)
+            es_metric_aggs[agg_name] = {"percentiles": {"field": field, "percents": [pct]}}
+        elif op == "count":
+            if field and field != "Records":
+                es_metric_aggs[agg_name] = {"value_count": {"field": field}}
+
+    # Build nested terms chain, innermost has metric aggs
+    current = es_metric_aggs
+    for col in reversed(terms_cols):
+        field = col.get("sourceField")
+        size = col.get("params", {}).get("size", 20)
+        order_dir = col.get("params", {}).get("orderDirection", "desc")
+        if field:
+            current = {f"by_{field.replace('.', '_')}": {
+                "terms": {"field": field, "size": size, "order": {"_count": order_dir}},
+                "aggs": current,
+            }}
+
+    # Wrap in date_histogram if present
+    if date_hist_cols:
+        col = date_hist_cols[0]
+        field = col.get("sourceField", "timestamp")
+        interval = col.get("params", {}).get("interval", "1m")
+        if interval == "auto":
+            interval = "1m"
+        current = {"by_time": {
+            "date_histogram": {"field": field, "fixed_interval": interval, "min_doc_count": 0},
+            "aggs": current,
+        }}
+
+    return {"size": 0, "query": es_filter, "aggs": current}
+
+
+def _extract_index_and_time_field_from_refs(
+    references: list[dict],
+    conn: KibanaConnection | None = None,
+) -> tuple[str | None, str | None]:
+    """Find the ES index pattern and time field from a saved object's references.
+
+    References contain a data view ID, not the actual ES index name.
+    Resolve via the Kibana data views API, falling back to the raw ID.
+
+    Returns (index_pattern, time_field_name) tuple.
+    """
+    for ref in references:
+        if ref.get("type") == "index-pattern":
+            data_view_id = ref.get("id")
+            client, base_url = _get_client_and_url(conn)
+            response = client.get(
+                f"{base_url}/api/data_views/data_view/{data_view_id}",
+            )
+            if response.status_code == 200:
+                dv = response.json().get("data_view", {})
+                index = dv.get("title")
+                time_field = dv.get("timeFieldName")
+                return (index or data_view_id, time_field)
+            return (data_view_id, None)
+    return (None, None)
 
 
 def _extract_index_from_refs(
     references: list[dict],
     conn: KibanaConnection | None = None,
 ) -> str | None:
-    """Find the ES index pattern from a saved object's references.
-
-    References contain a data view ID, not the actual ES index name.
-    Resolve via the Kibana data views API, falling back to the raw ID.
-    """
-    for ref in references:
-        if ref.get("type") == "index-pattern":
-            data_view_id = ref.get("id")
-            resolved = get_data_view_index_pattern(data_view_id, conn=conn)
-            return resolved or data_view_id
-    return None
+    """Find the ES index pattern from a saved object's references."""
+    index, _ = _extract_index_and_time_field_from_refs(references, conn=conn)
+    return index
 
 
 def _extract_query_string(search_source: dict) -> str | None:

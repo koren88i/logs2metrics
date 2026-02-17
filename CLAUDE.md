@@ -68,6 +68,8 @@ python -m pytest -v          # 196 tests, no Docker required
 
 10. **Migrate ALL call sites when introducing a wrapper.** Grep for direct usage of the underlying API and convert them.
 
+11. **Handle ALL variants of external system enums.** When parsing a discriminator field from an external system (e.g. Kibana's `schema`, `type`, `operationType`), handle every known value explicitly. Log a warning for unrecognized values rather than silently skipping them. Partial enum handling leads to silent data loss (Bug 8).
+
 ---
 
 ## Design Standards
@@ -92,6 +94,10 @@ python -m pytest -v          # 196 tests, no Docker required
 
 10. **Decouple creation from dependency order.** Verify step N succeeded before step N+1, or use atomic batches.
 
+11. **Replicate runtime context when previewing external system data.** If the source system adds filters, time ranges, or transformations at render time (not stored in the saved object), your preview must inject them too. Otherwise the preview will show different results than the original (Bug 9).
+
+12. **Test parsers against real exports from the target system.** Synthetic test data only covers the variants you imagined. Real data from production dashboards exposes panel types, schemas, and field structures you didn't anticipate (Bugs 8, 9).
+
 ---
 
 ## Bug Investigation Methodology
@@ -112,6 +118,22 @@ When something doesn't work as expected, **do not jump to the first plausible ex
 5. **Distinguish code bugs from mental model bugs.** If the code does exactly what you wrote but the result is wrong, the bug is in your understanding of the external system (ES, Kibana, etc.) — not in the code. These are harder: you need to verify your assumptions about how the external system works, not just re-read your own logic.
 
 **Anti-pattern**: Assuming the first hypothesis is correct and iterating on fixes without disproving alternatives. This leads to a chain of patches addressing symptoms of a misdiagnosis.
+
+### Lessons from External System Integration (Kibana Panel Parsing)
+
+These lessons came from testing against a real external Kibana with real dashboards — all bugs were invisible in synthetic/unit testing.
+
+1. **Enumerate all variants of external enums, not just the ones you've seen.** Kibana's `schema` field has 4 values (`metric`, `segment`, `group`, `bucket`). We built the parser against time-series panels (which use `segment` for date_histogram and `group` for terms) and never encountered `bucket` (tables) or terms-in-`segment` (pie charts). The fix was trivial once found, but the bug was invisible for weeks. **Action**: When parsing an external system's discriminator field, look up ALL possible values in the system's documentation or source code — don't infer from sample data.
+
+2. **Test against real data from the target system, not just synthetic data.** Our synthetic dashboards only had time-series charts. Real dashboards have tables, pies, markdown sections, maps, TSVB panels, and Lens panels — all with different structures. Every panel type we hadn't seen exposed a parsing gap. **Action**: When building a parser for an external system, get a real export and test against it early.
+
+3. **Preview should replicate what the source system does, not just replay the stored query.** Kibana injects time range, dashboard-level filters, and control filters at render time — none of these are stored in the panel's saved query. Our preview showed different results because it was missing the runtime context. **Action**: When proxying or previewing data from another system, identify what runtime context that system adds and replicate it.
+
+4. **When a field can come from multiple sources, establish a fallback chain.** `time_field` can come from a panel's date_histogram column, or from the Kibana data view's `timeFieldName`. Table panels don't have date_histogram, so they need the data view fallback. **Action**: For each field in a parsed model, document where it comes from and what the fallback is when the primary source is absent.
+
+5. **Silent drops are worse than errors.** The `"bucket"` schema terms were silently dropped — no error, no warning, just empty results. If the parser had logged "unknown schema: bucket", we'd have found the bug immediately. **Action**: Log or raise on unrecognized values in external system enums rather than silently skipping them.
+
+6. **Never hardcode fallback values for external system fields.** When a field like `index` or `time_field` isn't available, fail loudly rather than silently defaulting to a value from the demo dataset (e.g. `'app-logs'`, `'timestamp'`). A wrong default produces plausible-looking but incorrect results — harder to debug than an error. **Action**: Require explicit values; use data view metadata as fallback source, not hardcoded strings.
 
 ---
 
@@ -144,6 +166,35 @@ When adding features that depend on external system behavior, explicitly documen
 | Kibana panel reference names | Dashboard prefixes with `{panelIndex}:` but panels store without prefix. |
 | `searchSourceJSON` is required | Dashboard attributes MUST include it or Kibana crashes. |
 | Lens panels hard to create via API | Legacy `visualization` saved objects with `visState` + `aggs` are more reliable. |
+| Kibana `schema` is polymorphic | `"segment"` means date_histogram in time-series charts but terms in pie/bar charts. `"bucket"` is used by tables for row grouping. `"group"` is for split series. Always handle ALL schema values, not just the ones you've seen. |
+| Kibana time range is injected at render time | Dashboard time picker filter is NOT saved in the panel's query. Kibana adds `range` filter at render time. Any preview/proxy must inject it manually. |
+| Data views have `timeFieldName` | The Kibana data view API returns both `title` (index pattern) and `timeFieldName`. Use `timeFieldName` as fallback for panels without date_histogram. |
+| Legacy vis vs Lens vs embedded panels | By-reference panels use `panelRefName` → refs → saved object. Lens panels embed full config in `embeddableConfig.attributes`. Some panels (TSVB, maps) embed config but aren't Lens. Route by `type` field and check for embedded config. |
 | Continuous transforms are forward-only | Only process docs in time buckets AFTER the checkpoint. The 24h initial generation seals all past buckets. Injected events must be at exactly `now` (current open bucket) — even 30s in the past can land in a sealed bucket. |
 | Transform `sync.time.delay` is baked in | Set at creation time. Now configurable per rule via `sync_delay` field (default `30s`). Editing delay on an active rule auto-reprovisions. |
 | Transform `time_bucket` is fixed, Kibana's is dynamic | Kibana auto-interval changes based on time range (~30s for 1h view, ~3h for 30d view). The transform needs a fixed interval baked at creation. This sets the floor of resolution — queries can aggregate up (1m→1h) but never finer. |
+
+---
+
+## Hardcoded Values & External System Compatibility
+
+The codebase has two categories of hardcoded values: **demo-only** (only used in the bundled test flow) and **production defaults** (affect real external connections). Know which is which before changing them.
+
+### Demo-only (safe — only affect bundled test workflow)
+| Value | Location | Context |
+|-------|----------|---------|
+| `app-logs` index | `log_generator.py`, `debug_ui.html` Step 2 | Demo log generation and "See Raw Logs" step. Bypassed via "Skip — Use Existing Data". |
+| `timestamp/service/endpoint/...` schema | `log_generator.py`, `debug_ui.html` Step 2 | Demo-specific field names. Not used by analysis, scoring, or rule creation. |
+| `l2m-rule-*`, `l2m-metrics-rule-*` prefixes | `elastic_backend.py` | Namespaced for our created objects. Won't collide with external data. |
+| `l2m-metrics-dashboard` ID | `kibana_connector.py` | Our created dashboard. Won't overwrite external dashboards. |
+| `_KIBANA_SERVICE_MAP` entries | `main.py` | Maps known Docker compose services. Unknown URLs fall through to header-based resolution. |
+
+### Production defaults (affect real connections — change with care)
+| Value | Location | Status |
+|-------|----------|--------|
+| `time_field: "timestamp"` | `models.py` SourceConfig default | **Mitigated**: UI always sends `panel.time_field` from data view resolution. Default only applies if API is called directly without specifying `time_field`. |
+| `panel.time_field \|\| 'timestamp'` | `debug_ui.html` (3 places) | **Mitigated**: Last-resort fallback. `time_field` is now resolved from Kibana data views for all panel types. Only fires if data view API fails. |
+| `number_of_shards: 1, replicas: 0` | `elastic_backend.py` | **Intentional for PoC**: Metrics indices are small. Production deployments may want to make this configurable. |
+| `MAX_DIMENSIONS: 5, MAX_SERIES_COUNT: 100K` | `guardrails.py` | **Intentional**: Conservative guardrails. Can be bypassed with `skip_guardrails=true`. |
+| `retention_days: 450` | `models.py` BackendConfig default | **Configurable per rule**: Just a default, always overridable. |
+| `/api/es/search` requires `index` field | `main.py` | **Fixed**: Was defaulting to `app-logs`. Now returns 400 if `index` not provided. |

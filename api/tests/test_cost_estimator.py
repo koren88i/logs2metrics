@@ -79,7 +79,7 @@ class TestEstimateCost:
 
         rule = make_rule_create()
         estimate_cost(rule)
-        mock_es_connector["get_index_stats"].assert_called_with("app-logs")
+        mock_es_connector["get_index_stats"].assert_called_with("app-logs", es_client=None)
 
 
 class TestParseTimeBucketSeconds:

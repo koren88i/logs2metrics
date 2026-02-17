@@ -7,6 +7,7 @@ and the scoring engine to produce a full DashboardAnalysis.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -15,6 +16,9 @@ import kibana_connector
 from connector_models import FieldMapping, PanelAnalysis
 from kibana_connector import KibanaConnection
 from scoring import SuitabilityScore, score_panel
+
+if TYPE_CHECKING:
+    from elasticsearch import Elasticsearch
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +44,7 @@ def analyze_dashboard(
     dashboard_id: str,
     lookback_override: str | None = None,
     conn: KibanaConnection | None = None,
+    es_client: Elasticsearch | None = None,
 ) -> DashboardAnalysis:
     """Fetch a dashboard, score every panel, return structured analysis.
 
@@ -74,7 +79,7 @@ def analyze_dashboard(
     for panel in detail.panels:
         ip = panel.index_pattern
         if ip and ip not in field_type_cache:
-            field_type_cache[ip] = _resolve_field_types(ip, conn=conn)
+            field_type_cache[ip] = _resolve_field_types(ip, conn=conn, es_client=es_client)
 
     # Score each panel
     scored: list[PanelScore] = []
@@ -98,14 +103,18 @@ def analyze_dashboard(
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
-def _resolve_field_types(data_view_id: str, conn: KibanaConnection | None = None) -> dict[str, FieldMapping]:
+def _resolve_field_types(
+    data_view_id: str,
+    conn: KibanaConnection | None = None,
+    es_client: Elasticsearch | None = None,
+) -> dict[str, FieldMapping]:
     """Resolve a Kibana data view ID to a dict of field_name → FieldMapping."""
     try:
         index_pattern = kibana_connector.get_data_view_index_pattern(data_view_id, conn=conn)
         if not index_pattern:
             index_pattern = data_view_id  # fallback: treat ID as pattern
 
-        mapping = es_connector.get_mapping(index_pattern)
+        mapping = es_connector.get_mapping(index_pattern, es_client=es_client)
         return {f.name: f for f in mapping.fields}
     except Exception:
         log.warning(

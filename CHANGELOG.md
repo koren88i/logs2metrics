@@ -5,6 +5,56 @@
 
 ---
 
+## External Dashboard Parsing Fixes (2026-02-16)
+
+Bug hunt session: connected the portal to a real external Kibana (`elastic_recommand` project) and tested every panel type. Found and fixed several parsing gaps that only manifest with non-time-series panels.
+
+- **Fix**: Kibana `schema: "bucket"` not handled in panel parsing
+  - **Symptom**: Table panels (e.g. "Top Queried Fields") parsed with `group_by_fields: []` and `es_query.aggs: {}`. Preview Agg returned no results; Create Rule would create a transform with no dimensions.
+  - **Root cause**: Kibana uses three schemas for bucket aggs: `"segment"` (x-axis), `"group"` (split series), `"bucket"` (table rows). Our code only handled `"segment"` and `"group"`, silently dropping all table-row terms aggs.
+  - **Fix**: Added `"bucket"` to the schema check in both `_parse_visualization()` and `_build_es_query_from_vis_aggs()`.
+
+- **Fix**: Kibana `schema: "segment"` terms aggs dropped for pie/bar charts
+  - **Symptom**: Pie panels (e.g. "Query Type Distribution") parsed with `group_by_fields: []` and `es_query.aggs: {}`. Same empty results as the table bug.
+  - **Root cause**: Our code assumed `schema: "segment"` always meant `date_histogram`. Pie and bar charts use `"segment"` for their terms slices/buckets too. Non-date_histogram segment aggs were silently ignored.
+  - **Fix**: In `_parse_visualization()`, non-date_histogram segment aggs are now treated as group-by dimensions. In `_build_es_query_from_vis_aggs()`, segment terms are routed to `group_aggs` instead of being ignored.
+
+- **Fix**: Preview Agg had no time range filter
+  - **Symptom**: Preview aggregated over the entire index history instead of the dashboard's time range. Results didn't match what Kibana showed.
+  - **Root cause**: Kibana silently injects a time range filter (e.g. `timestamp >= now-24h`) based on the time picker. Our preview query used the panel's `es_query` as-is with no time constraint.
+  - **Fix**: Preview Agg now reads the Lookback dropdown and wraps the query in a `bool` + `range` filter on the panel's `time_field`.
+
+- **Fix**: Search proxy defaulted to `app-logs` index
+  - **Symptom**: If a caller forgot to pass `index` in the request body, the proxy would silently query `app-logs` instead of returning an error. On external systems without `app-logs`, this caused `index_not_found_exception`.
+  - **Fix**: `POST /api/es/search` now returns 400 if `index` is not provided. No silent fallback.
+
+- **Fix**: `time_field` not resolved for panels without `date_histogram`
+  - **Symptom**: Table/pie panels had `time_field: null`, which would default to `'timestamp'` in the UI — potentially wrong for the target index.
+  - **Root cause**: `time_field` was only extracted from `date_histogram` columns. Panels without date_histogram never populated it.
+  - **Fix**: New `_extract_index_and_time_field_from_refs()` resolves `timeFieldName` from the Kibana data view API. All three panel parsers (`_parse_visualization`, `_parse_lens_panel`, `_parse_embedded_panel`) fall back to the data view's time field when no date_histogram is present.
+
+---
+
+## ES Connection Routing for External Clusters (2026-02-15)
+
+- **Feature**: Added `X-ES-Url` header support — allows the portal UI to target any Elasticsearch cluster for all operations (analysis, transforms, provisioning, status checks)
+  - New ES URL input field in connection bar (next to Kibana URL), sent as `X-ES-Url` header
+  - Resolution priority: explicit `X-ES-Url` → service map lookup from `X-Kibana-Url` → default `ES_URL` env var
+  - Supports optional `X-ES-User` / `X-ES-Pass` headers for authenticated ES clusters
+  - New `get_es_client()` FastAPI dependency replaces the old `_get_es_client()` helper
+- **Feature**: Threaded `es_client` parameter through the entire call chain
+  - `es_connector.py`: all 4 functions accept `es_client=None`
+  - `cost_estimator.py`: `estimate_cost()` and `_estimate_series_count()` accept `es_client=None`
+  - `guardrails.py`: `evaluate()` accepts `es_client=None`
+  - `analyzer.py`: `analyze_dashboard()` and `_resolve_field_types()` accept `es_client=None`
+  - `backend.py` ABC: all 4 abstract methods accept `es_client=None`
+  - `elastic_backend.py`: all public methods accept `es_client=None`, private helpers take `client` as required param
+- **Feature**: Added "Skip — Use Existing Data" button in Pipeline Step 1 — unlocks analysis steps without generating synthetic logs, enabling analysis of external dashboards with real data
+- **Fix**: `/api/config` now returns `es_url` alongside `kibana_url` for UI pre-population
+- **Tests**: Updated existing mocks for new `es_client` parameter signatures; all 196 tests pass
+
+---
+
 ## Prometheus Exporter + Grafana Integration (2026-02-14)
 
 - **Feature**: Added Prometheus exporter — reads pre-computed metrics from ES metrics indices and exposes them at `GET /metrics` in Prometheus text format
@@ -178,6 +228,19 @@
 - **Root cause**: `mgrDeleteRule()` and `cleanup()` used raw `fetch()` instead of `api()` wrapper. These call sites predated multi-Kibana and weren't migrated.
 - **Fix**: Replaced `fetch()` with `api()`. Added 204 No Content handling.
 - **Why missed**: No multi-connection testing. No static analysis enforcing `api()` usage.
+
+### Bug 8: Table/Pie Panel Aggs Silently Dropped (`schema` Mismatch)
+- **Symptom**: Table panels ("Top Queried Fields") and pie panels ("Query Type Distribution") parsed with `group_by_fields: []` and empty `es_query.aggs: {}`. Preview Agg showed no results.
+- **Root cause**: Kibana's visState uses three `schema` values for bucket aggs: `"segment"` (x-axis in charts), `"group"` (split series), `"bucket"` (table rows). Additionally, `"segment"` is used for both `date_histogram` AND `terms` (pie slices, bar x-axis). Our code only handled `"segment"` as date_histogram and `"group"` as terms — missing `"bucket"` entirely and dropping non-date_histogram `"segment"` aggs.
+- **Fix**: `"bucket"` schema routed to group-by. Non-date_histogram `"segment"` schema routed to group-by. Applied to both `_parse_visualization()` (field extraction) and `_build_es_query_from_vis_aggs()` (query building).
+- **Why missed**: Initially developed against time-series panels (line charts) which use `"segment"` only for `date_histogram` and `"group"` for terms. Never tested with table or pie visualizations. No unit test included a `schema: "bucket"` or a non-date_histogram `schema: "segment"` agg.
+- **Pattern**: Same class of bug as Bug 3 (auth parity) — handling some variants of an external system's enum but not all. The fix is the same: enumerate all variants at development time, not discovery time.
+
+### Bug 9: Preview Agg Missing Time Range Filter
+- **Symptom**: Preview Agg aggregated over the entire index history. A table showing "Top 20 fields in last 24h" in Kibana showed different (larger) counts in our preview.
+- **Root cause**: Kibana injects a time range filter (`range` on the time field) from the dashboard time picker on every query. Our preview used the panel's stored `es_query` as-is — which doesn't include the time range (Kibana adds it at render time, not save time).
+- **Fix**: Preview Agg reads the existing Lookback dropdown value and wraps the query in `bool.filter[range]`.
+- **Why missed**: Tested with small synthetic datasets where total count ≈ recent count, so the omission wasn't obvious. Only visible when previewing against a real index with months of data.
 
 ### Bug 7: "Checking..." Forever on Zero-Match Transforms
 - **Symptom**: Active rules with no matching docs showed "Checking..." for 60s

@@ -5,11 +5,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
 from models import LogMetricRule
+
+if TYPE_CHECKING:
+    from elasticsearch import Elasticsearch
 
 
 class TransformHealth(str, Enum):
@@ -47,13 +50,13 @@ class MetricsBackend(ABC):
     """Abstract interface for metrics backends."""
 
     @abstractmethod
-    def validate(self, rule: LogMetricRule) -> ValidationResult: ...
+    def validate(self, rule: LogMetricRule, es_client: Elasticsearch | None = None) -> ValidationResult: ...
 
     @abstractmethod
-    def provision(self, rule: LogMetricRule) -> ProvisionResult: ...
+    def provision(self, rule: LogMetricRule, es_client: Elasticsearch | None = None) -> ProvisionResult: ...
 
     @abstractmethod
-    def get_status(self, rule_id: int) -> BackendStatus: ...
+    def get_status(self, rule_id: int, es_client: Elasticsearch | None = None) -> BackendStatus: ...
 
     @abstractmethod
-    def deprovision(self, rule_id: int) -> None: ...
+    def deprovision(self, rule_id: int, es_client: Elasticsearch | None = None) -> None: ...

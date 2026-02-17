@@ -164,7 +164,7 @@ class TestCreateMetricsIndex:
         from elastic_backend import ElasticMetricsBackend
         backend = ElasticMetricsBackend()
         rule = make_log_metric_rule()
-        backend._create_metrics_index(rule, "test-policy")
+        backend._create_metrics_index(rule, "test-policy", mock_es_client)
 
         call_args = mock_es_client.indices.create.call_args
         body = call_args.kwargs.get("body", call_args[1].get("body") if len(call_args) > 1 else None)
@@ -178,7 +178,7 @@ class TestCreateMetricsIndex:
         rule = make_log_metric_rule(
             compute={"type": "sum", "field": "response_time", "percentiles": None}
         )
-        backend._create_metrics_index(rule, "test-policy")
+        backend._create_metrics_index(rule, "test-policy", mock_es_client)
 
         call_args = mock_es_client.indices.create.call_args
         body = call_args.kwargs.get("body", call_args[1].get("body") if len(call_args) > 1 else None)

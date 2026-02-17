@@ -7,11 +7,15 @@ from converting a log aggregation into a pre-materialized metric.
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 import es_connector
 from models import RuleCreate
+
+if TYPE_CHECKING:
+    from elasticsearch import Elasticsearch
 
 # ── Constants ────────────────────────────────────────────────────────
 
@@ -58,6 +62,7 @@ class CostEstimate(BaseModel):
 def estimate_cost(
     rule: RuleCreate,
     log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
+    es_client: Elasticsearch | None = None,
 ) -> CostEstimate:
     """Estimate storage cost comparison between logs and metrics for a rule.
 
@@ -67,7 +72,7 @@ def estimate_cost(
     if not index:
         index = rule.source.index_pattern
 
-    stats = es_connector.get_index_stats(index)
+    stats = es_connector.get_index_stats(index, es_client=es_client)
     doc_count = stats.doc_count
     store_bytes = stats.store_size_bytes
 
@@ -92,7 +97,7 @@ def estimate_cost(
     docs_per_day = doc_count
 
     # ── Series count ─────────────────────────────────────────────
-    series_count = _estimate_series_count(index, rule.group_by.dimensions)
+    series_count = _estimate_series_count(index, rule.group_by.dimensions, es_client=es_client)
 
     # ── Bucket math ──────────────────────────────────────────────
     bucket_seconds = _parse_time_bucket_seconds(rule.group_by.time_bucket)
@@ -134,7 +139,7 @@ def estimate_cost(
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _estimate_series_count(index: str, dimensions: list[str]) -> int:
+def _estimate_series_count(index: str, dimensions: list[str], es_client: Elasticsearch | None = None) -> int:
     """Estimate the number of unique metric series from dimension cardinalities.
 
     series_count = product of cardinalities of all dimensions.
@@ -146,7 +151,7 @@ def _estimate_series_count(index: str, dimensions: list[str]) -> int:
     product = 1
     for dim in dimensions:
         try:
-            card = es_connector.get_field_cardinality(index, dim)
+            card = es_connector.get_field_cardinality(index, dim, es_client=es_client)
             product *= max(card.cardinality, 1)
         except Exception:
             # If we can't get cardinality, assume a conservative 100
