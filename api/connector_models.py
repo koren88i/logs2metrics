@@ -65,6 +65,7 @@ class PanelAnalysis(BaseModel):
     group_by_fields: list[str] = Field(default_factory=list)
     has_raw_docs: bool = False
     filter_query: str | None = None
+    filter_fields: list[str] = Field(default_factory=list)
     es_query: dict | None = None  # Pre-built ES query body for preview
 
 
@@ -73,3 +74,4 @@ class DashboardDetail(BaseModel):
     title: str
     description: str = ""
     panels: list[PanelAnalysis]
+    dashboard_filter_fields: list[str] = Field(default_factory=list)

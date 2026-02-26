@@ -139,7 +139,7 @@ These lessons came from testing against a real external Kibana with real dashboa
 
 ## Test Strategy
 
-The current test suite (196 tests) mocks all external services (ES, Kibana, log-generator). This means:
+The current test suite (221 tests) mocks all external services (ES, Kibana, log-generator). This means:
 - **What it validates**: Our code does what we wrote — correct API contracts, model validation, error handling, static patterns.
 - **What it cannot validate**: Whether our assumptions about external system behavior are correct.
 
@@ -173,6 +173,8 @@ When adding features that depend on external system behavior, explicitly documen
 | Continuous transforms are forward-only | Only process docs in time buckets AFTER the checkpoint. The 24h initial generation seals all past buckets. Injected events must be at exactly `now` (current open bucket) — even 30s in the past can land in a sealed bucket. |
 | Transform `sync.time.delay` is baked in | Set at creation time. Now configurable per rule via `sync_delay` field (default `30s`). Editing delay on an active rule auto-reprovisions. |
 | Transform `time_bucket` is fixed, Kibana's is dynamic | Kibana auto-interval changes based on time range (~30s for 1h view, ~3h for 30d view). The transform needs a fixed interval baked at creation. This sets the floor of resolution — queries can aggregate up (1m→1h) but never finer. |
+| Kibana control panel structure varies across versions | Kibana 8.x uses `optionsListControl`, `rangeSliderControl`, `controlGroup` (with child panels in `embeddableConfig.panels`). Legacy uses `input_control_vis` (with `visState.params.controls[].fieldName`). Field name location: `explicitInput.fieldName` or `embeddableConfig.fieldName`. Always check for new control types with `"control" in panel_type.lower()` and log unrecognized ones. |
+| Dashboard filter controls signal high-cardinality drill-down usage | If a dashboard has an options list control on `user_id` or `client_ip`, users rely on filtering by those fields. Converting panels to pre-computed metrics loses this drill-down because those fields can't be metric dimensions (cardinality explosion). The scoring engine surfaces this as an informational warning, not a score penalty. |
 
 ---
 

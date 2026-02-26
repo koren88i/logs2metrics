@@ -267,3 +267,153 @@ class TestImportSavedObjects:
         assert len(lines) == 2
         assert json.loads(lines[0])["id"] == "a"
         assert json.loads(lines[1])["id"] == "b"
+
+
+class TestExtractFilterFields:
+    """Test _extract_filter_fields — extracts field names from structured filters."""
+
+    def test_meta_key_extracted(self):
+        from kibana_connector import _extract_filter_fields
+        ss = {"filter": [{"meta": {"key": "user_id"}, "query": {"match_phrase": {"user_id": "abc"}}}]}
+        assert _extract_filter_fields(ss) == ["user_id"]
+
+    def test_range_filter_extracted(self):
+        from kibana_connector import _extract_filter_fields
+        ss = {"filter": [{"range": {"response_time": {"gte": 100}}}]}
+        assert _extract_filter_fields(ss) == ["response_time"]
+
+    def test_match_phrase_filter_extracted(self):
+        from kibana_connector import _extract_filter_fields
+        ss = {"filter": [{"match_phrase": {"status": "error"}}]}
+        assert _extract_filter_fields(ss) == ["status"]
+
+    def test_exists_filter_extracted(self):
+        from kibana_connector import _extract_filter_fields
+        ss = {"filter": [{"exists": {"field": "error_code"}}]}
+        assert _extract_filter_fields(ss) == ["error_code"]
+
+    def test_empty_filters_returns_empty(self):
+        from kibana_connector import _extract_filter_fields
+        assert _extract_filter_fields({}) == []
+        assert _extract_filter_fields({"filter": []}) == []
+
+    def test_multiple_filters_deduplicated(self):
+        from kibana_connector import _extract_filter_fields
+        ss = {"filter": [
+            {"meta": {"key": "user_id"}, "query": {}},
+            {"meta": {"key": "user_id"}, "query": {}},
+            {"meta": {"key": "status"}, "query": {}},
+        ]}
+        assert _extract_filter_fields(ss) == ["user_id", "status"]
+
+    def test_unrecognized_filter_shape_skipped(self):
+        from kibana_connector import _extract_filter_fields
+        ss = {"filter": [{"custom_weird_filter": True}]}
+        assert _extract_filter_fields(ss) == []
+
+    def test_mixed_filter_types(self):
+        from kibana_connector import _extract_filter_fields
+        ss = {"filter": [
+            {"meta": {"key": "service"}, "query": {}},
+            {"range": {"latency": {"gte": 100}}},
+            {"exists": {"field": "error"}},
+        ]}
+        assert _extract_filter_fields(ss) == ["service", "latency", "error"]
+
+    def test_non_dict_filters_skipped(self):
+        from kibana_connector import _extract_filter_fields
+        ss = {"filter": ["not_a_dict", 42, None]}
+        assert _extract_filter_fields(ss) == []
+
+
+class TestExtractControlPanelFields:
+    """Test _extract_control_panel_fields — extracts fields from dashboard controls."""
+
+    def test_options_list_control(self):
+        from kibana_connector import _extract_control_panel_fields
+        panels = [
+            {"type": "optionsListControl", "explicitInput": {"fieldName": "user_id"}},
+        ]
+        assert _extract_control_panel_fields(panels) == ["user_id"]
+
+    def test_range_slider_control(self):
+        from kibana_connector import _extract_control_panel_fields
+        panels = [
+            {"type": "rangeSliderControl", "explicitInput": {"fieldName": "latency"}},
+        ]
+        assert _extract_control_panel_fields(panels) == ["latency"]
+
+    def test_control_group_with_children(self):
+        from kibana_connector import _extract_control_panel_fields
+        panels = [{
+            "type": "controlGroup",
+            "embeddableConfig": {
+                "panels": {
+                    "ctrl-0": {"explicitInput": {"fieldName": "service"}},
+                    "ctrl-1": {"explicitInput": {"fieldName": "region"}},
+                },
+            },
+        }]
+        assert _extract_control_panel_fields(panels) == ["service", "region"]
+
+    def test_control_group_children_as_list(self):
+        from kibana_connector import _extract_control_panel_fields
+        panels = [{
+            "type": "controlGroup",
+            "embeddableConfig": {
+                "panels": [
+                    {"explicitInput": {"fieldName": "env"}},
+                ],
+            },
+        }]
+        assert _extract_control_panel_fields(panels) == ["env"]
+
+    def test_embeddable_config_fallback(self):
+        from kibana_connector import _extract_control_panel_fields
+        panels = [
+            {"type": "optionsListControl", "embeddableConfig": {"fieldName": "host"}},
+        ]
+        assert _extract_control_panel_fields(panels) == ["host"]
+
+    def test_non_control_panels_ignored(self):
+        from kibana_connector import _extract_control_panel_fields
+        panels = [
+            {"type": "visualization", "panelIndex": "1"},
+            {"type": "lens", "panelIndex": "2"},
+        ]
+        assert _extract_control_panel_fields(panels) == []
+
+    def test_deduplicates_fields(self):
+        from kibana_connector import _extract_control_panel_fields
+        panels = [
+            {"type": "optionsListControl", "explicitInput": {"fieldName": "service"}},
+            {"type": "optionsListControl", "explicitInput": {"fieldName": "service"}},
+        ]
+        assert _extract_control_panel_fields(panels) == ["service"]
+
+    def test_mixed_controls_and_panels(self):
+        from kibana_connector import _extract_control_panel_fields
+        panels = [
+            {"type": "visualization", "panelIndex": "1"},
+            {"type": "optionsListControl", "explicitInput": {"fieldName": "user_id"}},
+            {"type": "lens", "panelIndex": "3"},
+            {"type": "rangeSliderControl", "explicitInput": {"fieldName": "latency"}},
+        ]
+        assert _extract_control_panel_fields(panels) == ["user_id", "latency"]
+
+    def test_legacy_input_control_vis(self):
+        from kibana_connector import _extract_control_panel_fields
+        panels = [{
+            "type": "input_control_vis",
+            "embeddableConfig": {
+                "vis": {
+                    "params": {
+                        "controls": [
+                            {"fieldName": "service"},
+                            {"fieldName": "region"},
+                        ]
+                    }
+                }
+            },
+        }]
+        assert _extract_control_panel_fields(panels) == ["service", "region"]

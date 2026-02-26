@@ -71,11 +71,11 @@ The second ES/Kibana stack (`elasticsearch2` + `kibana2`) runs with security ena
 - FastAPI + SQLModel + SQLite
 - `LogMetricRule` CRUD at `/api/rules`
 - ES connector (`es_connector.py`) — index metadata, mappings, cardinality, stats via `elasticsearch-py`
-- Kibana connector (`kibana_connector.py`) — dashboard listing, panel parsing, metrics dashboard CRUD + visualization cloning via `httpx`; supports per-request URL + basic auth override via `KibanaConnection` dataclass. Panel parsing handles all Kibana visualization schemas: `"metric"`, `"segment"` (date_histogram or terms for pie/bar), `"group"` (split series), `"bucket"` (table rows). Builds pre-computed ES queries from visState aggs (legacy) and Lens column definitions. Resolves `time_field` from Kibana data views for panels without explicit date_histogram.
+- Kibana connector (`kibana_connector.py`) — dashboard listing, panel parsing, metrics dashboard CRUD + visualization cloning via `httpx`; supports per-request URL + basic auth override via `KibanaConnection` dataclass. Panel parsing handles all Kibana visualization schemas: `"metric"`, `"segment"` (date_histogram or terms for pie/bar), `"group"` (split series), `"bucket"` (table rows). Builds pre-computed ES queries from visState aggs (legacy) and Lens column definitions. Resolves `time_field` from Kibana data views for panels without explicit date_histogram. Extracts filter field names from panel-level `searchSourceJSON.filter[]` and dashboard-level control panels (`optionsListControl`, `rangeSliderControl`, `controlGroup`, `input_control_vis`).
 - Connector response models (`connector_models.py`) — IndexInfo, IndexMapping, FieldCardinality, IndexStats, DashboardSummary, PanelAnalysis, DashboardDetail
 - Database (`database.py`) — SQLite engine + session + auto-migration for new columns
 - Config (`config.py`) — ES_URL / KIBANA_URL from environment variables
-- Scoring engine (`scoring.py`) — deterministic 0-95 suitability score with 6 weighted signals
+- Scoring engine (`scoring.py`) — deterministic 0-95 suitability score with 6 weighted signals + informational warnings for high-cardinality filter fields
 - Dashboard analyzer (`analyzer.py`) — orchestrates connectors + scoring, resolves field types
 - Cost estimator (`cost_estimator.py`) — compares log vs metric storage cost, estimates query speedup
 - Guardrails (`guardrails.py`) — 4 pre-creation checks: dimension limit, cardinality, high-cardinality fields, net savings

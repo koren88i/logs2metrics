@@ -543,7 +543,8 @@ async function loadPanels() {
       return;
     }
 
-    let panelsHtml = `<div class="stat" style="margin-bottom:0.5rem">Dashboard: <b>${dashboard.title || dashboard.id}</b> — <b>${state.panels.length}</b> panels</div>`;
+    const dashFilterFields = (dashboard.dashboard_filter_fields || []).join(', ');
+    let panelsHtml = `<div class="stat" style="margin-bottom:0.5rem">Dashboard: <b>${dashboard.title || dashboard.id}</b> — <b>${state.panels.length}</b> panels${dashFilterFields ? ` — Dashboard filters: <b>${dashFilterFields}</b>` : ''}</div>`;
 
     const BUCKET_OPTIONS = ['10s', '1m', '5m', '10m', '1h'];
 
@@ -551,6 +552,7 @@ async function loadPanels() {
       const aggList = (p.agg_types || []).join(', ') || 'none';
       const dims = (p.group_by_fields || []).join(', ') || 'none';
       const metrics = (p.metrics || []).map(m => m.field ? `${m.type}(${m.field})` : m.type).join(', ') || 'none';
+      const filterFields = (p.filter_fields || []).join(', ');
       const isRawDocs = p.has_raw_docs;
       const noDataSource = !p.index_pattern && !p.has_raw_docs;  // markdown, decorative panels
       // Pre-select bucket from the panel's date_histogram interval when available.
@@ -570,6 +572,7 @@ async function loadPanels() {
                 <span>Aggs: <b>${aggList}</b></span>
                 <span>Dims: <b>${dims}</b></span>
                 <span>Metrics: <b>${metrics}</b></span>
+                ${filterFields ? `<span>Filters: <b>${filterFields}</b></span>` : ''}
                 ${isRawDocs ? '<span style="color:#f85149">Raw docs (no aggregations)</span>' : ''}
                 ${noDataSource ? '<span style="color:#8b949e">No data source (decorative panel)</span>' : ''}
               </div>
@@ -770,6 +773,10 @@ async function analyzePanel(idx) {
       </tr>`;
     }).join('');
 
+    const warnings = (scored.score.warnings || []).map(w =>
+      `<div style="margin-top:0.5rem;padding:0.5rem;background:#1c1203;border:1px solid #d29922;border-radius:4px;font-size:0.8rem;color:#d29922"><b>Warning:</b> ${w}</div>`
+    ).join('');
+
     out.innerHTML = `
       <div style="margin-top:0.5rem">
         <span class="badge ${cls}" style="font-size:0.85rem">${score}/${maxScore} ${label}</span>
@@ -781,6 +788,7 @@ async function analyzePanel(idx) {
           ${breakdownRows}
         </table>
       </div>
+      ${warnings}
       <div style="margin-top:0.5rem;font-size:0.8rem;color:#8b949e">${scored.score.recommendation_text}</div>
     `;
   } catch(e) { out.innerHTML = `<div class="panel" style="border-color:#da3633"><pre>${e.message}</pre></div>`; }

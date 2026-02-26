@@ -90,6 +90,7 @@ def analyze_dashboard(
             field_types=ft,
             dashboard_time_from=time_from,
             refresh_interval_ms=refresh_ms,
+            dashboard_filter_fields=detail.dashboard_filter_fields,
         )
         scored.append(PanelScore(panel=panel, score=result))
 

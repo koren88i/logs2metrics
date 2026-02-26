@@ -19,6 +19,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from connector_models import FieldMapping, PanelAnalysis
+from cost_estimator import HIGH_CARDINALITY_FIELDS
 
 # Aggregation types that produce numeric metrics suitable for pre-aggregation
 NUMERIC_AGG_TYPES = {
@@ -48,6 +49,7 @@ class SuitabilityScore(BaseModel):
     total: int
     max_total: int
     breakdown: list[ScoreBreakdown] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     recommendation_text: str
 
 
@@ -59,6 +61,7 @@ def score_panel(
     field_types: dict[str, FieldMapping] | None = None,
     dashboard_time_from: str | None = None,
     refresh_interval_ms: int | None = None,
+    dashboard_filter_fields: list[str] | None = None,
 ) -> SuitabilityScore:
     """Score a parsed panel's suitability for metric conversion (0-95)."""
     breakdown: list[ScoreBreakdown] = []
@@ -73,11 +76,13 @@ def score_panel(
     total = sum(b.points for b in breakdown)
     max_total = sum(b.max_points for b in breakdown)
     recommendation = _generate_recommendation(total, panel)
+    warnings = _check_filter_field_warnings(panel, dashboard_filter_fields or [])
 
     return SuitabilityScore(
         total=total,
         max_total=max_total,
         breakdown=breakdown,
+        warnings=warnings,
         recommendation_text=recommendation,
     )
 
@@ -360,6 +365,49 @@ def _parse_lookback_days(time_from: str) -> int | None:
     except (ValueError, IndexError):
         return None
     return None
+
+
+def _check_filter_field_warnings(
+    panel: PanelAnalysis,
+    dashboard_filter_fields: list[str],
+) -> list[str]:
+    """Generate warnings for high-cardinality fields used in filters.
+
+    Checks both dashboard-level filter controls and panel-level structured
+    filters against the known HIGH_CARDINALITY_FIELDS set. Warns that
+    converting this panel to metrics will lose drill-down capability on
+    those fields.
+    """
+    warnings: list[str] = []
+
+    dashboard_hc = [
+        f for f in dashboard_filter_fields
+        if f.lower() in HIGH_CARDINALITY_FIELDS
+    ]
+    panel_hc = [
+        f for f in panel.filter_fields
+        if f.lower() in HIGH_CARDINALITY_FIELDS
+    ]
+
+    if dashboard_hc:
+        warnings.append(
+            f"Dashboard has filter controls on high-cardinality field(s): "
+            f"{', '.join(dashboard_hc)}. Converting this panel to metrics "
+            f"will lose the ability to drill down by "
+            f"{'these fields' if len(dashboard_hc) > 1 else 'this field'}, "
+            f"because including {'them' if len(dashboard_hc) > 1 else 'it'} "
+            f"as metric dimensions would cause cardinality explosion."
+        )
+
+    if panel_hc:
+        warnings.append(
+            f"Panel has structured filters on high-cardinality field(s): "
+            f"{', '.join(panel_hc)}. These filters will be baked into the "
+            f"transform query as static values. Users will not be able to "
+            f"change or remove them after conversion."
+        )
+
+    return warnings
 
 
 def _generate_recommendation(total: int, panel: PanelAnalysis) -> str:

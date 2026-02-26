@@ -5,6 +5,21 @@
 
 ---
 
+## High-Cardinality Filter Field Awareness (2026-02-25)
+
+Added detection and warnings for high-cardinality fields used in dashboard filters. When a Kibana dashboard has filter controls (e.g., dropdown for `user_id` or `client_ip`) or panels with structured filters on high-cardinality fields, the scoring engine now surfaces amber warnings explaining that converting those panels to metrics will lose drill-down capability by those fields.
+
+- **New**: `_extract_filter_fields()` helper in `kibana_connector.py` — parses `searchSourceJSON.filter[]` structured filters to extract field names (handles `meta.key`, `range`, `match_phrase`, `exists` shapes)
+- **New**: `_extract_control_panel_fields()` helper — extracts field names from dashboard control panels (`optionsListControl`, `rangeSliderControl`, `controlGroup`, legacy `input_control_vis`)
+- **New**: `filter_fields` field on `PanelAnalysis` model — panel-level structured filter fields
+- **New**: `dashboard_filter_fields` field on `DashboardDetail` model — dashboard-level control and filter fields
+- **New**: `warnings` field on `SuitabilityScore` model — informational warnings (separate from numeric score)
+- **New**: `_check_filter_field_warnings()` in `scoring.py` — checks filter fields against `HIGH_CARDINALITY_FIELDS` set
+- **UI**: Panel cards now show `Filters:` metadata; dashboard summary shows `Dashboard filters:`; amber warning boxes appear below score breakdown when high-cardinality filter fields detected
+- **Tests**: 25 new tests (221 total) covering filter field extraction, control panel parsing, and warning generation
+
+---
+
 ## External Dashboard Parsing Fixes (2026-02-16)
 
 Bug hunt session: connected the portal to a real external Kibana (`elastic_recommand` project) and tested every panel type. Found and fixed several parsing gaps that only manifest with non-time-series panels.

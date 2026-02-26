@@ -250,3 +250,62 @@ class TestRecommendation:
             dashboard_time_from="now-30d", refresh_interval_ms=10000,
         )
         assert "Strong candidate" in result.recommendation_text
+
+
+class TestFilterFieldWarnings:
+    def test_no_warnings_when_no_filter_fields(self, make_panel_analysis):
+        from scoring import score_panel
+        panel = make_panel_analysis()
+        result = score_panel(panel)
+        assert result.warnings == []
+
+    def test_dashboard_hc_field_produces_warning(self, make_panel_analysis):
+        from scoring import score_panel
+        panel = make_panel_analysis()
+        result = score_panel(panel, dashboard_filter_fields=["user_id", "service"])
+        assert len(result.warnings) == 1
+        assert "user_id" in result.warnings[0]
+        assert "service" not in result.warnings[0]  # not high-cardinality
+
+    def test_panel_hc_filter_field_produces_warning(self, make_panel_analysis):
+        from scoring import score_panel
+        panel = make_panel_analysis(filter_fields=["client_ip", "endpoint"])
+        result = score_panel(panel)
+        assert len(result.warnings) == 1
+        assert "client_ip" in result.warnings[0]
+        assert "baked into" in result.warnings[0]
+
+    def test_both_dashboard_and_panel_hc_fields(self, make_panel_analysis):
+        from scoring import score_panel
+        panel = make_panel_analysis(filter_fields=["session_id"])
+        result = score_panel(panel, dashboard_filter_fields=["user_id"])
+        assert len(result.warnings) == 2
+
+    def test_no_warning_for_low_cardinality_filter_fields(self, make_panel_analysis):
+        from scoring import score_panel
+        panel = make_panel_analysis(filter_fields=["service", "endpoint"])
+        result = score_panel(panel, dashboard_filter_fields=["environment"])
+        assert result.warnings == []
+
+    def test_warnings_do_not_affect_score(self, make_panel_analysis, make_field_mapping):
+        from scoring import score_panel
+        from connector_models import MetricInfo
+        panel_without = make_panel_analysis(
+            agg_types=["date_histogram", "count"],
+            metrics=[MetricInfo(type="count")],
+        )
+        panel_with = make_panel_analysis(
+            agg_types=["date_histogram", "count"],
+            metrics=[MetricInfo(type="count")],
+            filter_fields=["user_id"],
+        )
+        score_without = score_panel(panel_without)
+        score_with = score_panel(panel_with, dashboard_filter_fields=["session_id"])
+        assert score_without.total == score_with.total
+
+    def test_case_insensitive_matching(self, make_panel_analysis):
+        from scoring import score_panel
+        panel = make_panel_analysis(filter_fields=["User_ID"])
+        result = score_panel(panel)
+        assert len(result.warnings) == 1
+        assert "User_ID" in result.warnings[0]

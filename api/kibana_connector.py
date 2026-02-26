@@ -100,6 +100,16 @@ def get_dashboard_with_panels(
     panels_json = json.loads(attrs.get("panelsJSON", "[]"))
     references = {ref["name"]: ref for ref in dashboard.get("references", [])}
 
+    # Extract fields from dashboard-level control panels
+    dashboard_filter_fields = _extract_control_panel_fields(panels_json)
+
+    # Extract fields from dashboard-level searchSourceJSON filters
+    dashboard_search_source = json.loads(
+        attrs.get("kibanaSavedObjectMeta", {}).get("searchSourceJSON", "{}")
+    )
+    dashboard_filter_fields.extend(_extract_filter_fields(dashboard_search_source))
+    dashboard_filter_fields = list(dict.fromkeys(dashboard_filter_fields))
+
     panel_analyses = []
     for panel in panels_json:
         panel_ref_name = panel.get("panelRefName", "")
@@ -121,6 +131,7 @@ def get_dashboard_with_panels(
         title=attrs.get("title", ""),
         description=attrs.get("description", ""),
         panels=panel_analyses,
+        dashboard_filter_fields=dashboard_filter_fields,
     )
 
 
@@ -191,6 +202,7 @@ def _parse_saved_search(
         attrs.get("kibanaSavedObjectMeta", {}).get("searchSourceJSON", "{}")
     )
     filter_query = _extract_query_string(search_source)
+    filter_fields = _extract_filter_fields(search_source)
 
     return PanelAnalysis(
         panel_id=panel_id,
@@ -199,6 +211,7 @@ def _parse_saved_search(
         visualization_type="search",
         has_raw_docs=True,
         filter_query=filter_query,
+        filter_fields=filter_fields,
     )
 
 
@@ -224,6 +237,7 @@ def _parse_visualization(
         attrs.get("kibanaSavedObjectMeta", {}).get("searchSourceJSON", "{}")
     )
     filter_query = _extract_query_string(search_source)
+    filter_fields = _extract_filter_fields(search_source)
 
     vis_state = json.loads(attrs.get("visState", "{}"))
     vis_type = vis_state.get("type", "unknown")
@@ -291,6 +305,7 @@ def _parse_visualization(
         group_by_fields=group_by_fields,
         has_raw_docs=False,
         filter_query=filter_query,
+        filter_fields=filter_fields,
         es_query=es_query,
     )
 
@@ -364,6 +379,10 @@ def _parse_lens_panel(
     query_str = query.get("query", "")
     filter_query = query_str.strip() if query_str and query_str.strip() else None
 
+    # Lens stores structured filters separately from the query
+    lens_filters = state.get("filters", [])
+    filter_fields = _extract_filter_fields({"filter": lens_filters})
+
     # Build ES query from the raw Lens columns (preserves sizes, ordering, nesting)
     es_query = _build_es_query_from_lens_columns(all_columns, filter_query) if all_columns else None
 
@@ -384,6 +403,7 @@ def _parse_lens_panel(
         group_by_fields=group_by_fields,
         has_raw_docs=False,
         filter_query=filter_query,
+        filter_fields=filter_fields,
         es_query=es_query,
     )
 
@@ -623,6 +643,116 @@ def _extract_query_string(search_source: dict) -> str | None:
     if query_str and query_str.strip():
         return query_str.strip()
     return None
+
+
+def _extract_filter_fields(search_source: dict) -> list[str]:
+    """Extract field names from structured filters in a searchSourceJSON dict.
+
+    Kibana filters come in several shapes:
+    - {"meta": {"key": "field_name", ...}, "query": {...}}
+    - {"range": {"field_name": {...}}}
+    - {"match_phrase": {"field_name": "value"}}
+    - {"exists": {"field": "field_name"}}
+
+    Compound bool filters are skipped (too complex to reliably extract).
+    Returns a deduplicated list of field names.
+    """
+    filters = search_source.get("filter", [])
+    fields: list[str] = []
+    for f in filters:
+        if not isinstance(f, dict):
+            continue
+        # Most common: meta.key
+        meta_key = f.get("meta", {}).get("key")
+        if meta_key and meta_key != "$state":
+            fields.append(meta_key)
+            continue
+        # range filter: {"range": {"timestamp": {...}}}
+        if "range" in f and isinstance(f["range"], dict):
+            fields.extend(f["range"].keys())
+            continue
+        # match_phrase: {"match_phrase": {"field": "val"}}
+        if "match_phrase" in f and isinstance(f["match_phrase"], dict):
+            fields.extend(f["match_phrase"].keys())
+            continue
+        # exists: {"exists": {"field": "name"}}
+        if "exists" in f and isinstance(f["exists"], dict):
+            field_val = f["exists"].get("field")
+            if field_val:
+                fields.append(field_val)
+            continue
+        # Unrecognized filter shape — log and skip
+        log.debug("Unrecognized filter shape in searchSourceJSON: %s", list(f.keys()))
+
+    return list(dict.fromkeys(fields))  # deduplicate preserving order
+
+
+# Known Kibana control panel types. These are filter UI elements, not
+# aggregation panels — we extract their target field names to understand
+# which fields users filter by on this dashboard.
+_CONTROL_PANEL_TYPES = {
+    "optionsListControl",
+    "rangeSliderControl",
+    "timeSlider",
+}
+
+
+def _extract_control_panel_fields(panels_json: list[dict]) -> list[str]:
+    """Extract field names from dashboard control panels.
+
+    Kibana 8.x control panels appear in panelsJSON with types like
+    ``optionsListControl`` (standalone) or nested inside a ``controlGroup``
+    parent. The field being filtered is in ``explicitInput.fieldName`` or
+    ``embeddableConfig.fieldName``.
+
+    Legacy ``input_control_vis`` panels store fields in their saved object's
+    ``visState.params.controls[].fieldName`` — we extract from the
+    ``embeddableConfig`` if available inline.
+    """
+    fields: list[str] = []
+    for panel in panels_json:
+        panel_type = panel.get("type", "")
+
+        if panel_type in _CONTROL_PANEL_TYPES:
+            field = (
+                panel.get("explicitInput", {}).get("fieldName")
+                or panel.get("embeddableConfig", {}).get("fieldName")
+            )
+            if field:
+                fields.append(field)
+
+        elif panel_type == "controlGroup":
+            # Control groups contain child controls in embeddableConfig.panels
+            children = panel.get("embeddableConfig", {}).get("panels", {})
+            if isinstance(children, dict):
+                children = children.values()
+            for child in children:
+                if not isinstance(child, dict):
+                    continue
+                field = (
+                    child.get("explicitInput", {}).get("fieldName")
+                    or child.get("embeddableConfig", {}).get("fieldName")
+                )
+                if field:
+                    fields.append(field)
+
+        elif panel_type == "input_control_vis":
+            # Legacy input controls — field names in embeddableConfig inline
+            controls = (
+                panel.get("embeddableConfig", {})
+                .get("vis", {})
+                .get("params", {})
+                .get("controls", [])
+            )
+            for ctrl in controls:
+                field = ctrl.get("fieldName")
+                if field:
+                    fields.append(field)
+
+        elif "control" in panel_type.lower() and panel_type not in _CONTROL_PANEL_TYPES:
+            log.warning("Unrecognized control panel type: %s", panel_type)
+
+    return list(dict.fromkeys(fields))  # deduplicate preserving order
 
 
 # ── Metrics Dashboard (write operations) ─────────────────────────────
